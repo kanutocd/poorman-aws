@@ -3,13 +3,14 @@ aws_region        = "ap-southeast-1"
 environment       = "staging"
 availability_zone = "ap-southeast-1a"
 
-ami_id        = "ami-0123456789abcdef0"
-instance_type = "t4g.micro"
+ami_id               = "ami-0123456789abcdef0"
+instance_type        = "t4g.micro"
+root_volume_size_gib = 10
+data_volume_size_gib = 20
 
 # Staging is disposable. The EIP remains during STOP and ordinary applies;
 # guarded DESTROY releases it because retain_eip is false.
 retain_eip           = false
-data_volume_size_gib = 20
 retain_data_volume   = false
 
 vpc_cidr           = "10.70.0.0/24"

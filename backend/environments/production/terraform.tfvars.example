@@ -3,14 +3,15 @@ aws_region        = "ap-southeast-1"
 environment       = "production"
 availability_zone = "ap-southeast-1a"
 
-ami_id        = "ami-0123456789abcdef0"
-instance_type = "t4g.micro"
+ami_id               = "ami-0123456789abcdef0"
+instance_type        = "t4g.micro"
+root_volume_size_gib = 10
+data_volume_size_gib = 20
 
 # Production keeps a stable API address and a separate data volume. The root
 # volume is always disposable; the retained data volume is the durable-volume
 # foundation for application data.
 retain_eip           = true
-data_volume_size_gib = 20
 retain_data_volume   = true
 
 vpc_cidr           = "10.71.0.0/24"

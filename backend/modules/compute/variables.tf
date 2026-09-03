@@ -15,7 +15,9 @@ variable "ami_id" {
 }
 
 variable "instance_type" {
-  type = string
+  description = "EC2 instance type compatible with ami_id."
+  type        = string
+  default     = "t4g.micro"
 }
 
 variable "subnet_id" {
@@ -48,11 +50,25 @@ variable "ssm_session_kms_key_arn" {
 }
 
 variable "root_volume_size_gib" {
-  type = number
+  description = "Encrypted disposable root volume size."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.root_volume_size_gib >= 8
+    error_message = "root_volume_size_gib must be at least 8 GiB."
+  }
 }
 
 variable "data_volume_size_gib" {
-  type = number
+  description = "Encrypted data EBS volume size."
+  type        = number
+  default     = 20
+
+  validation {
+    condition     = var.data_volume_size_gib >= 8
+    error_message = "data_volume_size_gib must be at least 8 GiB."
+  }
 }
 
 variable "retain_eip" {

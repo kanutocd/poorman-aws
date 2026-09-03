@@ -48,10 +48,11 @@ still retained during `STOP` and ordinary applies, then released only by the
 guarded destructive path. Production plans reject `retain_eip = false`.
 
 The root EBS volume is always encrypted, defaults to `10 GiB`, and is deleted
-when its EC2 instance is terminated. Set `retain_data_volume = true` to
-preserve the separate encrypted
-data EBS volume across host termination and replacement. Set it to `false` for
-a disposable data volume. Retention is independent of `retain_eip`: a
+when its EC2 instance is terminated. Set `root_volume_size_gib` to customize
+its size. The separate encrypted data EBS volume defaults to `20 GiB`; set
+`data_volume_size_gib` to customize it. Set `retain_data_volume = true` to
+preserve the data volume across host termination and replacement. Set it to
+`false` for a disposable data volume. Retention is independent of `retain_eip`: a
 non-production environment can retain its data volume across destructive
 teardown while releasing its EIP, or release both. Production plans reject
 `retain_data_volume = false`.
@@ -103,7 +104,10 @@ if that state becomes important.
 - the AWS CLI Session Manager plugin on the operator workstation.
 
 The default `t4g.micro` instance requires an ARM64-compatible AMI. Override
-`instance_type` when the reviewed image uses another architecture.
+`instance_type` when the reviewed image uses another architecture. The
+`instance_type`, `root_volume_size_gib`, and `data_volume_size_gib` values can
+also be supplied as inputs to the reusable infrastructure workflow for each
+environment.
 
 To build the reviewed host AMI instead of using an existing one, also install
 Packer `1.11+` using the instructions in
