@@ -1,0 +1,144 @@
+name: Deploy application backend
+
+on:
+  workflow_call:
+    inputs:
+      infrastructure_repository:
+        description: "Repository containing the reusable infrastructure"
+        required: true
+        type: string
+      infrastructure_ref:
+        description: "Ref of the reusable infrastructure to execute"
+        required: false
+        default: main
+        type: string
+      application_name:
+        description: "Application identifier used in the release"
+        required: true
+        type: string
+      environment:
+        description: "Backend deployment environment"
+        required: true
+        type: string
+      aws_region:
+        description: "AWS deployment region"
+        required: true
+        type: string
+      state_bucket:
+        description: "Encrypted S3 bucket containing OpenTofu state"
+        required: true
+        type: string
+      api_url:
+        description: "Public API URL used for release verification"
+        required: true
+        type: string
+      compose_file:
+        description: "Consumer repository path to the release Compose file"
+        required: true
+        type: string
+      caddy_file:
+        description: "Consumer repository path to the release Caddyfile"
+        required: true
+        type: string
+      build_context:
+        description: "Consumer repository Docker build context"
+        required: false
+        default: .
+        type: string
+      dockerfile:
+        description: "Consumer repository Dockerfile path"
+        required: false
+        default: Dockerfile
+        type: string
+      frontend_url:
+        description: "Optional frontend URL for cross-origin smoke checks"
+        required: false
+        type: string
+      frontend_origin:
+        description: "Optional origin used by CORS and WebSocket smoke checks"
+        required: false
+        type: string
+      instance_id:
+        description: "Optional explicit target EC2 instance ID"
+        required: false
+        type: string
+    secrets:
+      aws_role_arn:
+        description: "IAM role allowed to deploy the backend"
+        required: true
+      application_api_token:
+        description: "Optional bearer token used by API verification"
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ inputs.application_name }}-backend-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.environment }} backend
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    env:
+      APPLICATION_NAME: ${{ inputs.application_name }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      API_URL: ${{ inputs.api_url }}
+      APPLICATION_API_TOKEN: ${{ secrets.application_api_token }}
+      ARTIFACT_STATE_BUCKET: ${{ inputs.state_bucket }}
+      FRONTEND_URL: ${{ inputs.frontend_url }}
+      FRONTEND_ORIGIN: ${{ inputs.frontend_origin }}
+      INSTANCE_ID: ${{ inputs.instance_id }}
+
+    steps:
+      - name: Check out consumer repository
+        uses: actions/checkout@v7
+
+      - name: Check out infrastructure repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.infrastructure_repository }}
+          ref: ${{ inputs.infrastructure_ref }}
+          path: poorman-aws
+
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-backend-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Resolve deployment bucket from OpenTofu state
+        working-directory: poorman-aws/backend
+        run: |
+          tofu init -reconfigure \
+            -backend-config="bucket=${ARTIFACT_STATE_BUCKET}" \
+            -backend-config="key=${APPLICATION_NAME}/backend/${ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+          echo "ARTIFACT_BUCKET=$(tofu output -raw deployment_bucket)" >> "$GITHUB_ENV"
+
+      - name: Build, publish, activate, and verify release
+        env:
+          COMPOSE_FILE: ${{ github.workspace }}/${{ inputs.compose_file }}
+          CADDY_FILE: ${{ github.workspace }}/${{ inputs.caddy_file }}
+          BUILD_CONTEXT: ${{ github.workspace }}/${{ inputs.build_context }}
+          DOCKERFILE: ${{ github.workspace }}/${{ inputs.dockerfile }}
+        run: bash poorman-aws/bin/deploy-backend --apply

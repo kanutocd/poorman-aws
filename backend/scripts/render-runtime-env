@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+parameter_path="${1:?usage: render-runtime-env PARAMETER_PATH OUTPUT_PATH}"
+output_path="${2:?usage: render-runtime-env PARAMETER_PATH OUTPUT_PATH}"
+temporary_path="$(mktemp "${output_path}.XXXXXX")"
+
+cleanup() {
+  rm -f "$temporary_path"
+}
+trap cleanup EXIT
+
+umask 077
+mkdir -p "$(dirname "$output_path")"
+
+aws ssm get-parameters-by-path \
+  --path "$parameter_path" \
+  --recursive \
+  --with-decryption \
+  --output json \
+  | jq -r '.Parameters[] | [.Name, .Value] | @tsv' \
+  | while IFS=$'\t' read -r parameter_name parameter_value; do
+      variable_name="${parameter_name##*/}"
+
+      if [[ ! "$variable_name" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+        echo "invalid environment variable name in SSM path" >&2
+        exit 1
+      fi
+
+      if [[ "$parameter_value" == *$'\n'* || "$parameter_value" == *$'\r'* ]]; then
+        echo "runtime parameters must be single-line values" >&2
+        exit 1
+      fi
+
+      printf '%s=%s\n' "$variable_name" "$parameter_value"
+    done >"$temporary_path"
+
+mv -f "$temporary_path" "$output_path"
+chmod 0600 "$output_path"

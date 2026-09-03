@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+frontend_url="${FRONTEND_URL:?FRONTEND_URL is required}"
+api_url="${API_URL:?API_URL is required}"
+frontend_origin="${FRONTEND_ORIGIN:-${frontend_url%/}}"
+cors_path="${CORS_PATH:-/healthz}"
+websocket_path="${WEBSOCKET_PATH:-/cable}"
+
+case "${CABLE_URL:-}" in
+  "")
+    case "$api_url" in
+      https://*) cable_url="wss://${api_url#https://}$websocket_path" ;;
+      http://*) cable_url="ws://${api_url#http://}$websocket_path" ;;
+      *) echo "API_URL must use http:// or https://" >&2; exit 1 ;;
+    esac
+    ;;
+  *) cable_url="$CABLE_URL" ;;
+esac
+
+temporary_directory="$(mktemp -d)"
+trap 'rm -rf "$temporary_directory"' EXIT
+
+curl_options=(--silent --show-error --location --max-time "${CURL_MAX_TIME_SECONDS:-20}")
+if [[ -n "${APPLICATION_API_TOKEN:-}" ]]; then
+  api_headers=(-H "Authorization: Bearer $APPLICATION_API_TOKEN")
+else
+  api_headers=()
+fi
+
+request_status() {
+  local output_file="$1"
+  local headers_file="$2"
+  shift 2
+  curl "${curl_options[@]}" -D "$headers_file" -o "$output_file" -w '%{http_code}' "$@"
+}
+
+header_present() {
+  local header_name="$1"
+  local headers_file="$2"
+  grep -Eiq "^${header_name}:" "$headers_file"
+}
+
+header_contains() {
+  local header_name="$1"
+  local expected_value="$2"
+  local headers_file="$3"
+  grep -Eiq "^${header_name}:[[:space:]]*${expected_value}[[:space:]]*$" "$headers_file"
+}
+
+fail() {
+  echo "live smoke failed: $*" >&2
+  exit 1
+}
+
+frontend_headers="$temporary_directory/frontend.headers"
+frontend_body="$temporary_directory/frontend.html"
+frontend_status="$(request_status "$frontend_body" "$frontend_headers" "${frontend_url%/}/")"
+[[ "$frontend_status" == "200" ]] || fail "frontend returned HTTP $frontend_status"
+
+for required_header in \
+  content-security-policy \
+  permissions-policy \
+  referrer-policy \
+  strict-transport-security \
+  x-content-type-options; do
+  header_present "$required_header" "$frontend_headers" || fail "frontend is missing $required_header"
+done
+
+deep_body="$temporary_directory/deep.html"
+deep_headers="$temporary_directory/deep.headers"
+deep_status="$(request_status "$deep_body" "$deep_headers" "${frontend_url%/}/smoke/deep-link")"
+[[ "$deep_status" == "200" ]] || fail "SPA deep link returned HTTP $deep_status"
+cmp -s "$frontend_body" "$deep_body" || fail "SPA deep link did not serve index.html"
+
+asset_path="$(grep -oE '/assets/[^" ]+\.(js|css)' "$frontend_body" | head -n 1 || true)"
+[[ -n "$asset_path" ]] || fail "frontend index did not reference a JavaScript or CSS asset"
+asset_status="$(request_status /dev/null "$temporary_directory/asset.headers" "${frontend_url%/}$asset_path")"
+[[ "$asset_status" == "200" ]] || fail "frontend asset returned HTTP $asset_status"
+
+missing_asset_status="$(request_status /dev/null "$temporary_directory/missing-asset.headers" "${frontend_url%/}/assets/missing-smoke-asset.js")"
+[[ "$missing_asset_status" == "404" ]] || fail "missing asset returned HTTP $missing_asset_status"
+
+for endpoint in healthz readyz; do
+  endpoint_status="$(request_status /dev/null "$temporary_directory/$endpoint.headers" "${api_headers[@]}" "${api_url%/}/$endpoint")"
+  [[ "$endpoint_status" == "200" ]] || fail "API /$endpoint returned HTTP $endpoint_status"
+done
+
+cors_headers="$temporary_directory/cors.headers"
+cors_status="$(curl "${curl_options[@]}" -X OPTIONS -D "$cors_headers" -o /dev/null -w '%{http_code}' \
+  -H "Origin: $frontend_origin" \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type' \
+  "${api_url%/}$cors_path")"
+[[ "$cors_status" == "204" ]] || fail "CORS preflight returned HTTP $cors_status"
+header_contains access-control-allow-origin "${frontend_origin//./\.}" "$cors_headers" || fail "CORS did not allow the frontend origin"
+header_present access-control-allow-methods "$cors_headers" || fail "CORS did not advertise allowed methods"
+header_present access-control-allow-headers "$cors_headers" || fail "CORS did not advertise allowed headers"
+
+untrusted_cors_headers="$temporary_directory/untrusted-cors.headers"
+curl "${curl_options[@]}" -X OPTIONS -D "$untrusted_cors_headers" -o /dev/null \
+  -H 'Origin: https://untrusted.example' \
+  -H 'Access-Control-Request-Method: POST' \
+  "${api_url%/}$cors_path" >/dev/null
+if header_present access-control-allow-origin "$untrusted_cors_headers"; then
+  fail "CORS allowed an untrusted origin"
+fi
+
+websocket_headers="$temporary_directory/websocket.headers"
+websocket_key='dGhlIHNhbXBsZSBub25jZQ=='
+curl_exit=0
+curl "${curl_options[@]}" --http1.1 --max-time "${WEBSOCKET_TIMEOUT_SECONDS:-5}" \
+  -D "$websocket_headers" -o /dev/null \
+  -H 'Connection: Upgrade' \
+  -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' \
+  -H "Sec-WebSocket-Key: $websocket_key" \
+  -H "Origin: $frontend_origin" \
+  "$cable_url" >/dev/null || curl_exit=$?
+grep -Eiq '^HTTP/[0-9.]+ 101 ' "$websocket_headers" || fail "Action Cable did not complete a WebSocket handshake (curl exit $curl_exit)"
+
+echo "live smoke passed: HTTPS, SPA fallback, assets, CORS, API health, and Action Cable"

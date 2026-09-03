@@ -1,0 +1,29 @@
+application_name  = "application"
+aws_region        = "ap-southeast-1"
+environment       = "production"
+availability_zone = "ap-southeast-1a"
+
+ami_id        = "ami-0123456789abcdef0"
+instance_type = "t4g.micro"
+
+# Production keeps a stable API address and a separate data volume. The root
+# volume is always disposable; the retained data volume is the durable-volume
+# foundation for application data.
+retain_eip           = true
+data_volume_size_gib = 20
+retain_data_volume   = true
+
+vpc_cidr           = "10.71.0.0/24"
+public_subnet_cidr = "10.71.0.0/26"
+
+ssm_parameter_path = "/application/production"
+# Set this when Session Manager preferences use a customer-managed KMS key.
+# ssm_session_kms_key_arn = "arn:aws:kms:ap-southeast-1:123456789012:key/EXAMPLE"
+route53_zone_name  = "example.test"
+
+# Set this when more than one public hosted zone matches the name.
+# route53_zone_id = "Z0123456789EXAMPLE"
+
+tags = {
+  Owner = "platform"
+}

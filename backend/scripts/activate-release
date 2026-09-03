@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+release_id="${1:?usage: activate-release RELEASE_ID}"
+application_name="${APPLICATION_NAME:?APPLICATION_NAME is required}"
+environment_file="/etc/${application_name}/environment"
+
+if [[ ! -r "$environment_file" ]]; then
+  echo "missing $environment_file" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$environment_file"
+
+release_root="${RELEASE_ROOT:?RELEASE_ROOT is required}"
+bucket="${ARTIFACT_BUCKET:?ARTIFACT_BUCKET is required}"
+artifact_prefix="${ARTIFACT_PREFIX:?ARTIFACT_PREFIX is required}"
+parameter_path="${SSM_PARAMETER_PATH:?SSM_PARAMETER_PATH is required}"
+project_name="${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required}"
+release_path="$release_root/releases/$release_id"
+temporary_path="$release_root/releases/.${release_id}.tmp.$$"
+current_path="$release_root/current"
+previous_target=""
+
+exec 9>"/run/lock/${application_name}-release.lock"
+flock -n 9 || {
+  echo "another release activation is in progress" >&2
+  exit 1
+}
+
+cleanup() {
+  rm -rf "$temporary_path"
+}
+trap cleanup EXIT
+
+verify_release() {
+  local release_directory="$1"
+  local manifest_path="$release_directory/manifest.json"
+  [[ -r "$manifest_path" ]] || {
+    echo "release manifest is missing: $manifest_path" >&2
+    return 1
+  }
+
+  local manifest_release_id
+  manifest_release_id="$(jq -r '.release_id // empty' "$manifest_path")"
+  [[ "$manifest_release_id" == "$release_id" ]] || {
+    echo "release manifest does not match requested release" >&2
+    return 1
+  }
+
+  for artifact in image.tar.zst compose.yaml Caddyfile; do
+    [[ -r "$release_directory/$artifact" ]] || {
+      echo "release artifact is missing: $artifact" >&2
+      return 1
+    }
+    expected_checksum="$(jq -r --arg artifact "$artifact" '.checksums[$artifact] // empty' "$manifest_path")"
+    actual_checksum="$(sha256sum "$release_directory/$artifact" | cut -d ' ' -f 1)"
+    [[ -n "$expected_checksum" && "$expected_checksum" == "$actual_checksum" ]] || {
+      echo "release checksum verification failed: $artifact" >&2
+      return 1
+    }
+  done
+}
+
+if [[ -e "$release_path" ]]; then
+  echo "Release already staged; verifying and reactivating: $release_id"
+  verify_release "$release_path"
+  zstd -d <"$release_path/image.tar.zst" | docker load >/dev/null
+else
+  install -d -m 0750 -o root -g root "$temporary_path"
+  source_uri="s3://$bucket/$artifact_prefix/$release_id"
+
+  aws s3 cp "$source_uri/compose.yaml" "$temporary_path/compose.yaml" >/dev/null
+  aws s3 cp "$source_uri/manifest.json" "$temporary_path/manifest.json" >/dev/null
+  aws s3 cp "$source_uri/Caddyfile" "$temporary_path/Caddyfile" >/dev/null
+  verify_release "$temporary_path"
+  aws s3 cp "$source_uri/image.tar.zst" - | zstd -d | docker load >/dev/null
+
+  /usr/local/bin/${application_name}-render-runtime-env "$parameter_path" "$temporary_path/runtime.env"
+  {
+    cat "$temporary_path/runtime.env"
+    printf 'APPLICATION_IMAGE=%s:%s\n' "${APPLICATION_IMAGE_REPOSITORY:-$application_name}" "$release_id"
+  } >"$temporary_path/runtime.env.next"
+  mv -f "$temporary_path/runtime.env.next" "$temporary_path/runtime.env"
+  mv -T "$temporary_path" "$release_path"
+fi
+
+if [[ -L "$current_path" ]]; then
+  previous_target="$(readlink -f "$current_path")"
+fi
+
+ln -sfn "$release_path" "$release_root/current.next"
+mv -Tf "$release_root/current.next" "$current_path"
+
+restore_previous_release() {
+  if [[ -n "$previous_target" ]]; then
+    ln -sfn "$previous_target" "$release_root/current.next"
+    mv -Tf "$release_root/current.next" "$current_path"
+    systemctl restart "${application_name}-compose.service" || true
+  fi
+}
+
+if ! systemctl restart "${application_name}-compose.service" || ! docker compose \
+  --project-name "$project_name" \
+  --env-file "$environment_file" \
+  --env-file "$current_path/runtime.env" \
+  -f "$current_path/compose.yaml" ps --status running >/dev/null; then
+  restore_previous_release
+  echo "release failed health activation: $release_id" >&2
+  exit 1
+fi
+
+echo "activated release $release_id"

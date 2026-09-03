@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if find backend -type f \( \
+  -name '*.tfstate' -o \
+  -name '*.tfstate.*' -o \
+  -name '*.tfplan' -o \
+  -name 'backend.hcl' -o \
+  -name 'terraform.tfvars' -o \
+  -name 'local.pkrvars.hcl' -o \
+  -name 'manifest*.json' \
+\) -print -quit | grep -q .; then
+  echo "generated or local infrastructure artifact found" >&2
+  exit 1
+fi
+
+if git grep -n -I -E -- \
+  '-----BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY-----|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}' \
+  -- ':!backend/README.md' ':!backend/packer/README.md'; then
+  echo "possible secret material found in tracked files" >&2
+  exit 1
+fi
+
+echo "Repository hygiene checks passed"

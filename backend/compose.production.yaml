@@ -1,0 +1,29 @@
+services:
+  application:
+    image: ${APPLICATION_IMAGE:?APPLICATION_IMAGE must be set}
+    env_file:
+      - runtime.env
+    ports:
+      - "127.0.0.1:9292:9292"
+    restart: unless-stopped
+
+  proxy:
+    image: ${CADDY_IMAGE:?CADDY_IMAGE must be set to a pinned image}
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL must be set}
+      APPLICATION_API_HOSTNAME: ${APPLICATION_API_HOSTNAME:?APPLICATION_API_HOSTNAME must be set}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      application:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:

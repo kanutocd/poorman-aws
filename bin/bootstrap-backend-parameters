@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  bootstrap-backend-parameters --environment ENV --from-env-file PATH [options]
+  bootstrap-backend-parameters --environment ENV --clear-parameter NAME [options]
+
+The env file is read locally and values are never printed. Dry-run is the
+default; --apply writes parameters beneath the configured parameter path. The
+clear-parameter mode removes one named parameter.
+EOF
+}
+
+environment=""
+environment_file=""
+application_name="${APPLICATION_NAME:-application}"
+parameter_path="${SSM_PARAMETER_PATH:-}"
+clear_parameter=""
+apply=false
+
+while (($# > 0)); do
+  case "$1" in
+    --environment) shift; environment="${1:-}" ;;
+    --from-env-file) shift; environment_file="${1:-}" ;;
+    --application-name) shift; application_name="${1:-}" ;;
+    --parameter-path) shift; parameter_path="${1:-}" ;;
+    --clear-parameter) shift; clear_parameter="${1:-}" ;;
+    --apply) apply=true ;;
+    --help) usage; exit 0 ;;
+    *) usage; exit 1 ;;
+  esac
+  shift
+done
+
+[[ "$environment" =~ ^(staging|production)$ ]] || {
+  echo "--environment must be staging or production" >&2
+  exit 1
+}
+if [[ -n "$clear_parameter" && -n "$environment_file" ]]; then
+  echo "--clear-parameter cannot be combined with --from-env-file" >&2
+  exit 1
+fi
+
+if [[ -z "$clear_parameter" && ! -r "$environment_file" ]]; then
+  echo "environment file is not readable: $environment_file" >&2
+  exit 1
+fi
+
+aws_region="${AWS_REGION:?AWS_REGION is required}"
+parameter_path="${parameter_path:-/$application_name/$environment}"
+
+[[ "$application_name" =~ ^[a-z][a-z0-9-]{1,32}$ ]] || {
+  echo "application name must be 2-33 lowercase letters, numbers, or hyphens" >&2
+  exit 1
+}
+[[ "$parameter_path" =~ ^/[^/].*[^/]$ ]] || {
+  echo "parameter path must start and end with a non-slash path component" >&2
+  exit 1
+}
+
+if [[ -n "$clear_parameter" ]]; then
+  [[ "$clear_parameter" =~ ^[A-Z][A-Z0-9_]*$ ]] || {
+    echo "parameter name must be an uppercase environment variable name" >&2
+    exit 1
+  }
+  echo "$parameter_path/$clear_parameter (delete if present)"
+  if [[ "$apply" == true ]]; then
+    aws ssm delete-parameter --region "$aws_region" \
+      --name "$parameter_path/$clear_parameter" --no-cli-pager >/dev/null 2>&1 || true
+    echo "Cleared $parameter_path/$clear_parameter"
+  else
+    echo "Dry run only. Re-run with --apply to clear the parameter."
+  fi
+  exit 0
+fi
+
+allowed_parameter() {
+  [[ "$1" =~ ^[A-Z][A-Z0-9_]*$ ]]
+}
+
+parameter_type() {
+  if [[ "$1" =~ (API_KEY|TOKEN|PASSWORD|SECRET|PRIVATE_KEY)$ ]]; then
+    printf 'SecureString'
+  else
+    printf 'String'
+  fi
+}
+
+parameters=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+  [[ -z "$line" || "$line" == \#* ]] && continue
+  [[ "$line" == *=* ]] || {
+    echo "invalid environment line" >&2
+    exit 1
+  }
+  name="${line%%=*}"
+  value="${line#*=}"
+  allowed_parameter "$name" || {
+    echo "unsupported runtime parameter: $name" >&2
+    exit 1
+  }
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || {
+    echo "runtime parameters must be single-line values" >&2
+    exit 1
+  }
+  parameters+=("$name"$'\t'"$value")
+done <"$environment_file"
+
+[[ "${#parameters[@]}" -gt 0 ]] || {
+  echo "no runtime parameters found" >&2
+  exit 1
+}
+
+for parameter in "${parameters[@]}"; do
+  name="${parameter%%$'\t'*}"
+  type="$(parameter_type "$name")"
+  echo "$parameter_path/$name ($type)"
+  if [[ "$apply" == true ]]; then
+    value="${parameter#*$'\t'}"
+    aws ssm put-parameter --region "$aws_region" \
+      --name "$parameter_path/$name" --type "$type" --value "$value" \
+      --overwrite --no-cli-pager >/dev/null
+  fi
+done
+
+if [[ "$apply" != true ]]; then
+  echo "Dry run only. Re-run with --apply to write these parameters."
+else
+  echo "Updated runtime parameters under $parameter_path"
+fi

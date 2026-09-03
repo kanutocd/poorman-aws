@@ -1,0 +1,690 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export AWS_PAGER=""
+
+usage() {
+  cat <<'USAGE'
+Usage: bootstrap-github-oidc [options]
+
+Create the AWS IAM bootstrap required by application GitHub Actions workflows.
+The command is a dry run unless --apply is provided.
+
+Options:
+  --repo OWNER/REPOSITORY   GitHub repository used by the workflows (required)
+  --state-bucket NAME       Existing encrypted OpenTofu state bucket (required)
+  --route53-zone-id ID      Existing public Route 53 zone ID for scoped DNS access
+  --route53-zone-name NAME  Public hosted zone name (required unless zone ID is set)
+  --create-hosted-zone      Create or reuse the public hosted zone on --apply
+  --region REGION            Deployment region (default: AWS_REGION or ap-southeast-1)
+  --application-name NAME   Application identifier used in resource names
+  --role-prefix PREFIX      IAM role name prefix (default: APPLICATION-github)
+  --include-frontend-roles  Create or update CloudFront frontend roles
+  --frontend-state-prefix PREFIX
+                            Prefix for frontend deployment-state buckets
+  --frontend-assets-prefix PREFIX
+                            Prefix for frontend asset buckets
+  --frontend-bucket-prefix PREFIX
+                            Prefix for environment frontend buckets
+  --frontend-parameter-path PATH
+                            SSM path for frontend deployment parameters
+  --apply                    Create or update the provider, roles, and policies
+  --help                     Show this help
+
+The script creates or updates the account-level GitHub OIDC provider, roles for
+the staging, production, and ami-build GitHub environments, and optionally a
+public Route 53 hosted zone. Pass --include-frontend-roles to also create
+least-privilege frontend deployment roles. Frontend resource-name prefixes and
+the parameter path are configurable so the roles do not depend on a particular
+deployment framework. It does not create GitHub environments or secrets.
+USAGE
+}
+
+die() {
+  printf 'error: %s\n' "$1" >&2
+  exit 1
+}
+
+repo=''
+state_bucket=''
+route53_zone_id=''
+route53_zone_name="${ROUTE53_ZONE_NAME:-}"
+create_hosted_zone=false
+region="${AWS_REGION:-ap-southeast-1}"
+application_name="${APPLICATION_NAME:-application}"
+role_prefix="${ROLE_PREFIX:-}"
+include_frontend_roles=false
+frontend_state_prefix="${FRONTEND_STATE_PREFIX:-${application_name}-frontend-state-}"
+frontend_assets_prefix="${FRONTEND_ASSETS_PREFIX:-${application_name}-frontend-assets-}"
+frontend_bucket_prefix="${FRONTEND_BUCKET_PREFIX:-${application_name}-frontend-}"
+frontend_parameter_path="${FRONTEND_PARAMETER_PATH:-/${application_name}/frontend}"
+apply=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo)
+      [[ $# -ge 2 ]] || die "--repo requires OWNER/REPOSITORY"
+      repo="$2"
+      shift 2
+      ;;
+    --state-bucket)
+      [[ $# -ge 2 ]] || die "--state-bucket requires a bucket name"
+      state_bucket="$2"
+      shift 2
+      ;;
+    --route53-zone-id)
+      [[ $# -ge 2 ]] || die "--route53-zone-id requires a hosted zone ID"
+      route53_zone_id="$2"
+      shift 2
+      ;;
+    --route53-zone-name)
+      [[ $# -ge 2 ]] || die "--route53-zone-name requires a domain name"
+      route53_zone_name="$2"
+      shift 2
+      ;;
+    --application-name)
+      [[ $# -ge 2 ]] || die "--application-name requires a name"
+      application_name="$2"
+      shift 2
+      ;;
+    --create-hosted-zone)
+      create_hosted_zone=true
+      shift
+      ;;
+    --region)
+      [[ $# -ge 2 ]] || die "--region requires an AWS region"
+      region="$2"
+      shift 2
+      ;;
+    --role-prefix)
+      [[ $# -ge 2 ]] || die "--role-prefix requires a role name prefix"
+      role_prefix="$2"
+      shift 2
+      ;;
+    --include-frontend-roles)
+      include_frontend_roles=true
+      shift
+      ;;
+    --frontend-state-prefix)
+      [[ $# -ge 2 ]] || die "--frontend-state-prefix requires a bucket-name prefix"
+      frontend_state_prefix="$2"
+      shift 2
+      ;;
+    --frontend-assets-prefix)
+      [[ $# -ge 2 ]] || die "--frontend-assets-prefix requires a bucket-name prefix"
+      frontend_assets_prefix="$2"
+      shift 2
+      ;;
+    --frontend-bucket-prefix)
+      [[ $# -ge 2 ]] || die "--frontend-bucket-prefix requires a bucket-name prefix"
+      frontend_bucket_prefix="$2"
+      shift 2
+      ;;
+    --frontend-parameter-path)
+      [[ $# -ge 2 ]] || die "--frontend-parameter-path requires an SSM path"
+      frontend_parameter_path="$2"
+      shift 2
+      ;;
+    --apply)
+      apply=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+  esac
+done
+
+command -v aws >/dev/null 2>&1 || die "aws CLI is required"
+[[ -n "$repo" ]] || die "--repo is required"
+[[ -n "$state_bucket" ]] || die "--state-bucket is required"
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "--repo must be OWNER/REPOSITORY"
+[[ "$state_bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || die "--state-bucket must be a valid S3 bucket name"
+[[ "$application_name" =~ ^[a-z][a-z0-9-]{1,32}$ ]] || die "--application-name must be a valid lowercase identifier"
+[[ "$frontend_state_prefix" =~ ^[a-z0-9][a-z0-9.-]{1,60}$ ]] || die "--frontend-state-prefix must be a valid bucket-name prefix"
+[[ "$frontend_assets_prefix" =~ ^[a-z0-9][a-z0-9.-]{1,60}$ ]] || die "--frontend-assets-prefix must be a valid bucket-name prefix"
+[[ "$frontend_bucket_prefix" =~ ^[a-z0-9][a-z0-9.-]{1,60}$ ]] || die "--frontend-bucket-prefix must be a valid bucket-name prefix"
+[[ "$frontend_parameter_path" =~ ^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ ]] || die "--frontend-parameter-path must be an absolute SSM path"
+if [[ -z "$role_prefix" ]]; then
+  role_prefix="${application_name}-github"
+fi
+[[ "$role_prefix" =~ ^[A-Za-z0-9+=,.@_-]{1,60}$ ]] || die "--role-prefix contains invalid characters"
+if [[ -n "$route53_zone_id" ]]; then
+  [[ "$route53_zone_id" =~ ^Z[A-Z0-9]+$ ]] || die "--route53-zone-id must look like a public hosted zone ID"
+elif [[ -z "$route53_zone_name" ]]; then
+  die "--route53-zone-name is required when --route53-zone-id is not set"
+fi
+if [[ -n "$route53_zone_name" ]]; then
+  [[ "$route53_zone_name" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\.?$ ]] || die "--route53-zone-name must be a valid domain name"
+fi
+if [[ "$create_hosted_zone" == true && -n "$route53_zone_id" ]]; then
+  die "--create-hosted-zone cannot be combined with --route53-zone-id"
+fi
+
+export AWS_DEFAULT_REGION="$region"
+account_id="$(aws sts get-caller-identity --region "$region" --query Account --output text)"
+[[ "$account_id" =~ ^[0-9]{12}$ ]] || die "could not determine the AWS account ID"
+
+repository_owner="${repo%%/*}"
+repository_name="${repo#*/}"
+
+provider_arn="arn:aws:iam::${account_id}:oidc-provider/token.actions.githubusercontent.com"
+route53_resource='*'
+if [[ -n "$route53_zone_id" ]]; then
+  route53_resource="arn:aws:route53:::hostedzone/${route53_zone_id}"
+fi
+
+environments=(staging production ami-build)
+frontend_environments=(staging production)
+temporary_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$temporary_dir"
+}
+trap cleanup EXIT
+
+write_trust_policy() {
+  local environment="$1"
+  local output_path="$2"
+
+  cat >"$output_path" <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Federated": "${provider_arn}"},
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+      },
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": [
+          "repo:${repo}:environment:${environment}",
+          "repo:${repository_owner}@*/${repository_name}@*:environment:${environment}"
+        ]
+      }
+    }
+  }]
+}
+EOF
+}
+
+write_frontend_trust_policy() {
+  local environment="$1"
+  local output_path="$2"
+
+  cat >"$output_path" <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Federated": "${provider_arn}"},
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:ref": "refs/heads/main"
+      },
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": [
+          "repo:${repo}:environment:${environment}",
+          "repo:${repository_owner}@*/${repository_name}@*:environment:${environment}"
+        ]
+      }
+    }
+  }]
+}
+EOF
+}
+
+write_deployment_policy() {
+  local environment="$1"
+  local output_path="$2"
+  local state_prefix="${application_name}/backend/${environment}/"
+  local backend_role_arn="arn:aws:iam::${account_id}:role/${application_name}-${environment}-backend-*"
+  local backend_profile_arn="arn:aws:iam::${account_id}:instance-profile/${application_name}-${environment}-backend-*"
+  local artifact_bucket_arn="arn:aws:s3:::${application_name}-${environment}-backend-artifacts-*"
+
+  cat >"$output_path" <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadWriteEnvironmentState",
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+      "Resource": "arn:aws:s3:::${state_bucket}",
+      "Condition": {"StringLike": {"s3:prefix": ["${state_prefix}*"]}}
+    },
+    {
+      "Sid": "ReadWriteEnvironmentStateObjects",
+      "Effect": "Allow",
+      "Action": ["s3:DeleteObject", "s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::${state_bucket}/${state_prefix}*"
+    },
+    {
+      "Sid": "ManageEnvironmentArtifacts",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": ["${artifact_bucket_arn}", "${artifact_bucket_arn}/*"]
+    },
+    {
+      "Sid": "ManageEnvironmentCompute",
+      "Effect": "Allow",
+      "Action": "ec2:*",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "${region}"}}
+    },
+    {
+      "Sid": "ManageEnvironmentIam",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AddRoleToInstanceProfile", "iam:CreateInstanceProfile",
+        "iam:CreateRole", "iam:DeleteInstanceProfile", "iam:DeleteRole",
+        "iam:DeleteRolePolicy", "iam:GetInstanceProfile", "iam:GetRole",
+        "iam:GetRolePolicy", "iam:ListInstanceProfilesForRole",
+        "iam:ListAttachedRolePolicies", "iam:ListRolePolicies",
+        "iam:PassRole", "iam:PutRolePolicy",
+        "iam:RemoveRoleFromInstanceProfile", "iam:TagInstanceProfile",
+        "iam:TagRole", "iam:UntagInstanceProfile", "iam:UntagRole"
+      ],
+      "Resource": ["${backend_role_arn}", "${backend_profile_arn}"],
+      "Condition": {"StringEqualsIfExists": {"iam:PassedToService": "ec2.amazonaws.com"}}
+    },
+    {
+      "Sid": "ManageEnvironmentDns",
+      "Effect": "Allow",
+      "Action": ["route53:ChangeResourceRecordSets", "route53:GetHostedZone", "route53:ListResourceRecordSets", "route53:ListTagsForResource"],
+      "Resource": "${route53_resource}"
+    },
+    {
+      "Sid": "DiscoverHostedZone",
+      "Effect": "Allow",
+      "Action": "route53:ListHostedZonesByName",
+      "Resource": "*"
+    },
+    {
+      "Sid": "WaitForDnsChange",
+      "Effect": "Allow",
+      "Action": "route53:GetChange",
+      "Resource": "arn:aws:route53:::change/*"
+    },
+    {
+      "Sid": "SendEnvironmentReleaseCommands",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:${region}::document/AWS-RunShellScript",
+        "arn:aws:ec2:${region}:${account_id}:instance/*"
+      ]
+    },
+    {
+      "Sid": "ObserveEnvironmentReleaseCommands",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageFrontendCertificate",
+      "Effect": "Allow",
+      "Action": [
+        "acm:AddTagsToCertificate", "acm:DeleteCertificate",
+        "acm:DescribeCertificate", "acm:ListCertificates",
+        "acm:ListTagsForCertificate", "acm:RequestCertificate",
+        "acm:RemoveTagsFromCertificate"
+      ],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "us-east-1"}}
+    },
+    {
+      "Sid": "IdentifyAccount",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DescribeSsmEncryptionKeys",
+      "Effect": "Allow",
+      "Action": "kms:DescribeKey",
+      "Resource": "arn:aws:kms:${region}:${account_id}:key/*"
+    }
+  ]
+}
+EOF
+}
+
+write_frontend_policy() {
+  local environment="$1"
+  local output_path="$2"
+  local frontend_bucket_arn="arn:aws:s3:::${frontend_bucket_prefix}${environment}-*"
+  local frontend_objects_arn="${frontend_bucket_arn}/*"
+  local frontend_state_bucket_arn="arn:aws:s3:::${frontend_state_prefix}*"
+  local frontend_assets_bucket_arn="arn:aws:s3:::${frontend_assets_prefix}*"
+  local frontend_state_objects_arn="${frontend_state_bucket_arn}/*"
+  local frontend_assets_objects_arn="${frontend_assets_bucket_arn}/*"
+  local distribution_arn="arn:aws:cloudfront::${account_id}:distribution/*"
+  local function_arn="arn:aws:cloudfront::${account_id}:function/*"
+  local origin_access_control_arn="arn:aws:cloudfront::${account_id}:origin-access-control/*"
+  local key_value_store_arn="arn:aws:cloudfront::${account_id}:key-value-store/*"
+  local frontend_parameter_arn="arn:aws:ssm:${region}:${account_id}:parameter${frontend_parameter_path}/*"
+
+  cat >"$output_path" <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListFrontendBuckets",
+      "Effect": "Allow",
+      "Action": "s3:ListAllMyBuckets",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadWriteFrontendStateBuckets",
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"],
+      "Resource": [
+        "${frontend_state_bucket_arn}", "${frontend_assets_bucket_arn}"
+      ]
+    },
+    {
+      "Sid": "ReadWriteFrontendStateObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject",
+        "s3:ListMultipartUploadParts", "s3:PutObject"
+      ],
+      "Resource": [
+        "${frontend_state_objects_arn}", "${frontend_assets_objects_arn}"
+      ]
+    },
+    {
+      "Sid": "ManageFrontendAssetBucket",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": "${frontend_bucket_arn}"
+    },
+    {
+      "Sid": "ManageFrontendAssetObjects",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": "${frontend_objects_arn}"
+    },
+    {
+      "Sid": "ManageFrontendParameters",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:PutParameter"],
+      "Resource": "${frontend_parameter_arn}"
+    },
+    {
+      "Sid": "CreateFrontendCloudFrontResources",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:CreateDistribution", "cloudfront:CreateFunction",
+        "cloudfront:CreateKeyValueStore", "cloudfront:CreateOriginAccessControl",
+        "cloudfront:ListDistributions", "cloudfront:ListFunctions",
+        "cloudfront:ListOriginAccessControls"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageFrontendDistribution",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:CreateInvalidation", "cloudfront:DeleteDistribution",
+        "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig",
+        "cloudfront:GetInvalidation", "cloudfront:ListTagsForResource",
+        "cloudfront:TagResource", "cloudfront:UntagResource",
+        "cloudfront:UpdateDistribution"
+      ],
+      "Resource": "${distribution_arn}"
+    },
+    {
+      "Sid": "ManageFrontendFunctions",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:DeleteFunction", "cloudfront:DescribeFunction",
+        "cloudfront:GetFunction",
+        "cloudfront:ListTagsForResource", "cloudfront:PublishFunction",
+        "cloudfront:TestFunction", "cloudfront:TagResource",
+        "cloudfront:UntagResource", "cloudfront:UpdateFunction"
+      ],
+      "Resource": "${function_arn}"
+    },
+    {
+      "Sid": "ManageFrontendOriginAccessControls",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:DeleteOriginAccessControl", "cloudfront:GetOriginAccessControl",
+        "cloudfront:ListTagsForResource", "cloudfront:TagResource",
+        "cloudfront:UntagResource", "cloudfront:UpdateOriginAccessControl"
+      ],
+      "Resource": "${origin_access_control_arn}"
+    },
+    {
+      "Sid": "ManageFrontendKeyValueStore",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:DeleteKeyValueStore", "cloudfront:DescribeKeyValueStore",
+        "cloudfront:ListTagsForResource", "cloudfront:TagResource",
+        "cloudfront:UntagResource", "cloudfront:UpdateKeyValueStore",
+        "cloudfront-keyvaluestore:DeleteKey", "cloudfront-keyvaluestore:DescribeKeyValueStore",
+        "cloudfront-keyvaluestore:GetKey", "cloudfront-keyvaluestore:ListKeys",
+        "cloudfront-keyvaluestore:PutKey", "cloudfront-keyvaluestore:UpdateKeys"
+      ],
+      "Resource": "${key_value_store_arn}"
+    },
+    {
+      "Sid": "ReadFrontendCertificate",
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate", "acm:ListCertificates",
+        "acm:ListTagsForCertificate"
+      ],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "us-east-1"}}
+    },
+    {
+      "Sid": "IdentifyAccount",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "CreateCloudFrontServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"iam:AWSServiceName": "cloudfront.amazonaws.com"}}
+    }
+  ]
+}
+EOF
+}
+
+write_ami_policy() {
+  local output_path="$1"
+
+  cat >"$output_path" <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BuildRegionalAmi",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AllocateAddress", "ec2:AssociateAddress",
+        "ec2:AuthorizeSecurityGroupEgress", "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CreateImage", "ec2:CreateSecurityGroup", "ec2:CreateSnapshot",
+        "ec2:CreateTags", "ec2:CreateVolume", "ec2:DeleteSecurityGroup",
+        "ec2:DeleteSnapshot", "ec2:DeleteVolume", "ec2:Describe*",
+        "ec2:DetachVolume", "ec2:DisassociateAddress", "ec2:ModifyInstanceAttribute",
+        "ec2:ReleaseAddress", "ec2:RevokeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress", "ec2:RunInstances",
+        "ec2:TerminateInstances"
+      ],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "${region}"}}
+    },
+    {
+      "Sid": "IdentifyAccount",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+}
+
+printf 'AWS account: %s\n' "$account_id"
+printf 'Repository: %s\n' "$repo"
+printf 'Deployment region: %s\n' "$region"
+printf 'State bucket: %s\n' "$state_bucket"
+printf 'Route 53 zone: %s\n' "$route53_zone_name"
+printf 'Route 53 scope: %s\n' "$route53_resource"
+printf 'Roles: %s-staging, %s-production, %s-ami-build\n' "$role_prefix" "$role_prefix" "$role_prefix"
+if [[ "$include_frontend_roles" == true ]]; then
+  printf 'Frontend roles: %s-frontend-staging, %s-frontend-production\n' "$role_prefix" "$role_prefix"
+fi
+
+if [[ "$route53_resource" == '*' && "$create_hosted_zone" != true ]]; then
+  printf '%s\n' 'warning: Route 53 permissions are account-wide; pass --route53-zone-id to scope them.' >&2
+fi
+
+if [[ "$apply" != true ]]; then
+  if [[ "$create_hosted_zone" == true ]]; then
+    printf 'Would create or reuse public Route 53 hosted zone: %s\n' "$route53_zone_name"
+  fi
+  printf '%s\n' 'Dry run only. Re-run with --apply to create or update these IAM resources.'
+  exit 0
+fi
+
+if [[ "$create_hosted_zone" == true ]]; then
+  zone_name_fqdn="${route53_zone_name%.}."
+  route53_zone_id="$(aws route53 list-hosted-zones-by-name \
+    --region "$region" \
+    --dns-name "$zone_name_fqdn" \
+    --query "HostedZones[?Name=='${zone_name_fqdn}' && Config.PrivateZone==\`false\`].Id | [0]" \
+    --output text)"
+
+  if [[ -z "$route53_zone_id" || "$route53_zone_id" == 'None' ]]; then
+    route53_zone_id="$(aws route53 create-hosted-zone \
+      --region "$region" \
+      --name "$route53_zone_name" \
+      --caller-reference "${application_name}-${route53_zone_name}-$(date +%s)-$$" \
+      --hosted-zone-config "Comment=${application_name} public DNS,PrivateZone=false" \
+      --query 'HostedZone.Id' \
+      --output text)"
+    printf 'Created public Route 53 hosted zone: %s\n' "$route53_zone_id"
+  else
+    printf 'Reusing public Route 53 hosted zone: %s\n' "$route53_zone_id"
+  fi
+
+  route53_zone_id="${route53_zone_id#/hostedzone/}"
+  route53_resource="arn:aws:route53:::hostedzone/${route53_zone_id}"
+  printf 'Route 53 name servers; configure these at the domain registrar:\n'
+  aws route53 get-hosted-zone \
+    --region "$region" \
+    --id "$route53_zone_id" \
+    --query 'DelegationSet.NameServers' \
+    --output text
+fi
+
+if aws iam get-open-id-connect-provider \
+  --region "$region" \
+  --open-id-connect-provider-arn "$provider_arn" >/dev/null 2>&1; then
+  printf 'OIDC provider already exists: %s\n' "$provider_arn"
+else
+  aws iam create-open-id-connect-provider \
+    --region "$region" \
+    --url https://token.actions.githubusercontent.com \
+    --client-id-list sts.amazonaws.com \
+    --tags Key=Application,Value="${application_name}" Key=ManagedBy,Value=bootstrap-github-oidc \
+    >/dev/null
+  printf 'Created OIDC provider: %s\n' "$provider_arn"
+fi
+
+for environment in "${environments[@]}"; do
+  role_name="${role_prefix}-${environment}"
+  trust_policy="${temporary_dir}/${environment}-trust.json"
+  permissions_policy="${temporary_dir}/${environment}-permissions.json"
+  write_trust_policy "$environment" "$trust_policy"
+
+  if [[ "$environment" == 'ami-build' ]]; then
+    write_ami_policy "$permissions_policy"
+  else
+    write_deployment_policy "$environment" "$permissions_policy"
+  fi
+
+  if aws iam get-role --region "$region" --role-name "$role_name" >/dev/null 2>&1; then
+    aws iam update-assume-role-policy \
+      --region "$region" \
+      --role-name "$role_name" \
+      --policy-document "file://${trust_policy}"
+    printf 'Updated role trust policy: %s\n' "$role_name"
+  else
+    aws iam create-role \
+      --region "$region" \
+      --role-name "$role_name" \
+      --description "${application_name} GitHub Actions ${environment} deployment role" \
+      --assume-role-policy-document "file://${trust_policy}" \
+      --tags Key=Application,Value="${application_name}" Key=Environment,Value="${environment}" Key=ManagedBy,Value=bootstrap-github-oidc \
+      >/dev/null
+    printf 'Created role: %s\n' "$role_name"
+  fi
+
+  aws iam put-role-policy \
+    --region "$region" \
+    --role-name "$role_name" \
+    --policy-name "${role_name}-permissions" \
+    --policy-document "file://${permissions_policy}"
+  printf 'Applied inline policy: %s\n' "${role_name}-permissions"
+  printf 'GitHub environment %s AWS_ROLE_ARN: arn:aws:iam::%s:role/%s\n' \
+    "$environment" "$account_id" "$role_name"
+done
+
+if [[ "$include_frontend_roles" == true ]]; then
+  for environment in "${frontend_environments[@]}"; do
+    role_name="${role_prefix}-frontend-${environment}"
+    trust_policy="${temporary_dir}/frontend-${environment}-trust.json"
+    permissions_policy="${temporary_dir}/frontend-${environment}-permissions.json"
+    write_frontend_trust_policy "$environment" "$trust_policy"
+    write_frontend_policy "$environment" "$permissions_policy"
+
+    if aws iam get-role --region "$region" --role-name "$role_name" >/dev/null 2>&1; then
+      aws iam update-assume-role-policy \
+        --region "$region" \
+        --role-name "$role_name" \
+        --policy-document "file://${trust_policy}"
+      printf 'Updated role trust policy: %s\n' "$role_name"
+    else
+      aws iam create-role \
+        --region "$region" \
+        --role-name "$role_name" \
+        --description "${application_name} GitHub Actions frontend ${environment} deployment role" \
+        --assume-role-policy-document "file://${trust_policy}" \
+        --tags Key=Application,Value="${application_name}" Key=Environment,Value="${environment}" Key=Component,Value=frontend Key=ManagedBy,Value=bootstrap-github-oidc \
+        >/dev/null
+      printf 'Created role: %s\n' "$role_name"
+    fi
+
+    aws iam put-role-policy \
+      --region "$region" \
+      --role-name "$role_name" \
+      --policy-name "${role_name}-permissions" \
+      --policy-document "file://${permissions_policy}"
+    printf 'Applied inline policy: %s\n' "${role_name}-permissions"
+    printf 'GitHub environment %s AWS_FRONTEND_ROLE_ARN: arn:aws:iam::%s:role/%s\n' \
+      "$environment" "$account_id" "$role_name"
+  done
+fi
+
+printf '%s\n' 'AWS bootstrap complete. Configure the printed ARNs as GitHub environment secrets.'

@@ -1,0 +1,188 @@
+name: Application infrastructure
+
+on:
+  workflow_call:
+    inputs:
+      infrastructure_repository:
+        description: "Repository containing the reusable infrastructure"
+        required: true
+        type: string
+      infrastructure_ref:
+        description: "Ref of the reusable infrastructure to execute"
+        required: false
+        default: main
+        type: string
+      application_name:
+        description: "Application identifier used in resource names and tags"
+        required: true
+        type: string
+      environment:
+        description: "Environment to plan or apply"
+        required: true
+        type: string
+      apply:
+        description: "Apply the reviewed plan in the selected protected environment"
+        required: false
+        default: false
+        type: boolean
+      aws_region:
+        description: "AWS deployment region"
+        required: true
+        type: string
+      state_bucket:
+        description: "Encrypted S3 bucket containing OpenTofu state"
+        required: true
+        type: string
+      availability_zone:
+        description: "Single Availability Zone for the environment"
+        required: true
+        type: string
+      instance_type:
+        description: "EC2 instance type compatible with the AMI"
+        required: false
+        default: t4g.micro
+        type: string
+      ssm_parameter_path:
+        description: "SSM path used by the application host"
+        required: true
+        type: string
+      ssm_session_kms_key_arn:
+        description: "Optional customer-managed Session Manager KMS key ARN"
+        required: false
+        type: string
+      route53_zone_name:
+        description: "Existing public Route 53 hosted zone name"
+        required: true
+        type: string
+      route53_zone_id:
+        description: "Optional existing public Route 53 hosted zone ID"
+        required: false
+        type: string
+      tags_json:
+        description: "Additional resource tags as a JSON object"
+        required: false
+        default: '{}'
+        type: string
+    secrets:
+      aws_role_arn:
+        description: "IAM role allowed to manage this environment"
+        required: true
+      ami_id:
+        description: "Reviewed AMI ID for the application host"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.application_name }}-infrastructure-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate OpenTofu
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out infrastructure repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.infrastructure_repository }}
+          ref: ${{ inputs.infrastructure_ref }}
+          path: poorman-aws
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2
+
+      - name: Check OpenTofu formatting
+        run: tofu fmt -check -recursive poorman-aws/backend
+
+      - name: Initialize without remote state
+        working-directory: poorman-aws/backend
+        run: tofu init -backend=false -input=false
+
+      - name: Validate OpenTofu configuration
+        working-directory: poorman-aws/backend
+        run: tofu validate
+
+      - name: Check host scripts
+        run: bash -n poorman-aws/backend/scripts/* poorman-aws/bin/kill-non-production
+
+  plan:
+    name: Plan ${{ inputs.environment }}
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      APPLICATION_NAME: ${{ inputs.application_name }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      TF_VAR_application_name: ${{ inputs.application_name }}
+      TF_VAR_aws_region: ${{ inputs.aws_region }}
+      TF_VAR_environment: ${{ inputs.environment }}
+      TF_VAR_availability_zone: ${{ inputs.availability_zone }}
+      TF_VAR_ami_id: ${{ secrets.ami_id }}
+      TF_VAR_instance_type: ${{ inputs.instance_type }}
+      TF_VAR_ssm_parameter_path: ${{ inputs.ssm_parameter_path }}
+      TF_VAR_ssm_session_kms_key_arn: ${{ inputs.ssm_session_kms_key_arn }}
+      TF_VAR_route53_zone_name: ${{ inputs.route53_zone_name }}
+      TF_VAR_route53_zone_id: ${{ inputs.route53_zone_id }}
+      TF_VAR_tags: ${{ inputs.tags_json }}
+
+    steps:
+      - name: Check out infrastructure repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.infrastructure_repository }}
+          ref: ${{ inputs.infrastructure_ref }}
+          path: poorman-aws
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-infrastructure-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Initialize environment state
+        working-directory: poorman-aws/backend
+        run: >-
+          tofu init -reconfigure
+          -backend-config="bucket=${{ inputs.state_bucket }}"
+          -backend-config="key=${{ inputs.application_name }}/backend/${{ inputs.environment }}/terraform.tfstate"
+          -backend-config="region=${AWS_REGION}"
+          -backend-config="encrypt=true"
+          -backend-config="use_lockfile=true"
+
+      - name: Create reviewed plan
+        working-directory: poorman-aws/backend
+        run: tofu plan -out=backend.tfplan
+
+      - name: Apply exact reviewed plan
+        if: inputs.apply
+        working-directory: poorman-aws/backend
+        run: tofu apply backend.tfplan
+
+      - name: Publish redacted plan metadata
+        if: always()
+        run: |
+          {
+            echo "application=${{ inputs.application_name }}"
+            echo "environment=${{ inputs.environment }}"
+            echo "commit=${GITHUB_SHA}"
+            echo "applied=${{ inputs.apply }}"
+          } > backend-plan-metadata.txt
+
+      - name: Upload plan metadata
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.application_name }}-${{ inputs.environment }}-plan-metadata-${{ github.run_id }}
+          path: backend-plan-metadata.txt
+          if-no-files-found: error

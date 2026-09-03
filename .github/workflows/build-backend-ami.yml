@@ -1,0 +1,117 @@
+name: Build application host AMI
+
+on:
+  workflow_call:
+    inputs:
+      infrastructure_repository:
+        description: "Repository containing the reusable infrastructure"
+        required: true
+        type: string
+      infrastructure_ref:
+        description: "Ref of the reusable infrastructure to execute"
+        required: false
+        default: main
+        type: string
+      application_name:
+        description: "Application identifier used in AMI metadata and paths"
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region for the AMI build"
+        required: true
+        type: string
+      subnet_id:
+        description: "Public subnet for the temporary Packer builder"
+        required: true
+        type: string
+      ssh_cidr:
+        description: "Narrow CIDR allowed to reach the temporary builder"
+        required: true
+        type: string
+      ami_name_prefix:
+        description: "Immutable AMI name prefix"
+        required: true
+        type: string
+    secrets:
+      aws_role_arn:
+        description: "IAM role allowed to build the AMI"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ inputs.application_name }}-host-ami-${{ inputs.aws_region }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ARM64 application host AMI
+    runs-on: ubuntu-latest
+    environment: ami-build
+
+    env:
+      APPLICATION_NAME: ${{ inputs.application_name }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      PACKER_SUBNET_ID: ${{ inputs.subnet_id }}
+      PACKER_SSH_CIDR: ${{ inputs.ssh_cidr }}
+      PACKER_AMI_NAME_PREFIX: ${{ inputs.ami_name_prefix }}
+
+    steps:
+      - name: Check out infrastructure repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.infrastructure_repository }}
+          ref: ${{ inputs.infrastructure_ref }}
+          path: poorman-aws
+
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@v3
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}
+
+      - name: Initialize Packer plugins
+        working-directory: poorman-aws/backend/packer
+        run: packer init .
+
+      - name: Check Packer formatting
+        working-directory: poorman-aws/backend/packer
+        run: packer fmt -check .
+
+      - name: Validate Packer template
+        working-directory: poorman-aws/backend/packer
+        run: >-
+          packer validate .
+          -var "aws_region=${AWS_REGION}"
+          -var "application_name=${APPLICATION_NAME}"
+          -var "subnet_id=${PACKER_SUBNET_ID}"
+          -var "ssh_cidr=${PACKER_SSH_CIDR}"
+          -var "ami_name_prefix=${PACKER_AMI_NAME_PREFIX}"
+
+      - name: Build AMI
+        working-directory: poorman-aws/backend/packer
+        run: >-
+          packer build -machine-readable -color=false .
+          -var "aws_region=${AWS_REGION}"
+          -var "application_name=${APPLICATION_NAME}"
+          -var "subnet_id=${PACKER_SUBNET_ID}"
+          -var "ssh_cidr=${PACKER_SSH_CIDR}"
+          -var "ami_name_prefix=${PACKER_AMI_NAME_PREFIX}"
+
+      - name: Extract AMI metadata
+        working-directory: poorman-aws/backend/packer
+        run: |
+          jq '{builds: [.builds[] | {name, artifact_id, builder_type}], custom_data}' manifest.json > manifest.redacted.json
+
+      - name: Upload AMI manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}
+          path: poorman-aws/backend/packer/manifest.redacted.json
+          if-no-files-found: error

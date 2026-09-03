@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$project_root"
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "required command not found: $1" >&2
+    exit 1
+  }
+}
+
+require_command tofu
+require_command packer
+require_command bash
+require_command docker
+require_command shellcheck
+
+echo "Checking OpenTofu formatting"
+tofu fmt -check -recursive backend
+
+echo "Validating OpenTofu configuration"
+(
+  cd backend
+  tofu init -backend=false -input=false
+  tofu validate
+)
+
+echo "Running OpenTofu module tests"
+for module_path in backend/modules/deployment-artifacts backend/modules/networking; do
+  (
+    cd "$module_path"
+    tofu init -backend=false -input=false
+    tofu test -no-color
+  )
+done
+
+echo "Checking Docker Compose configuration"
+runtime_env_path="backend/runtime.env"
+: >"$runtime_env_path"
+trap 'rm -f "$runtime_env_path"' EXIT
+APPLICATION_IMAGE="example/application:quality" \
+  CADDY_IMAGE="caddy:2.10.2" \
+  ACME_EMAIL="ops@example.test" \
+  APPLICATION_API_HOSTNAME="api.example.test" \
+  docker compose -f backend/compose.production.yaml config --quiet
+rm -f "$runtime_env_path"
+trap - EXIT
+
+echo "Checking Packer formatting and configuration"
+(
+  cd backend/packer
+  packer init -upgrade=false .
+  packer fmt -check .
+  packer validate -var-file=example.pkrvars.hcl .
+)
+
+echo "Checking shell scripts"
+bash -n bin/* backend/scripts/* backend/packer/scripts/*.sh
+shellcheck --severity=warning bin/* backend/scripts/* backend/packer/scripts/*.sh
+
+echo "Checking repository hygiene"
+bash bin/quality-hygiene
+
+echo "Quality checks passed"

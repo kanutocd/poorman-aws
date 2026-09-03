@@ -1,0 +1,17 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+**/backend.hcl
+!**/backend.hcl.example
+**/terraform.tfvars
+!**/terraform.tfvars.example
+**/local.pkrvars.hcl
+**/manifest*.json
+**/*.variables.env
+**/*.secrets.env
+*.env
+!*.env.example
+coverage/
+vendor/
+.DS_Store

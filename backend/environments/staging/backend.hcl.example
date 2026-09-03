@@ -1,0 +1,5 @@
+bucket       = "replace-with-application-tofu-state-bucket"
+key          = "application/backend/staging/terraform.tfstate"
+region       = "ap-southeast-1"
+encrypt      = true
+use_lockfile = true

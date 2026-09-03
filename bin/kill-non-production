@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: kill-non-production --environment staging --action STOP|DESTROY|NUKE [options]
+
+STOP is a reversible EC2 stop that preserves the instance, root/data EBS, and
+any allocated EIP. DESTROY removes cost-bearing backend resources through an
+explicit non-production OpenTofu destroy plan. NUKE runs an un-targeted
+OpenTofu destroy for the entire selected backend environment.
+
+Options:
+  --environment NAME       Non-production environment (staging only)
+  --application-name NAME  Application identifier used for resource tags
+  --action ACTION          STOP, DESTROY, or NUKE
+  --instance-id ID         Explicit EC2 instance ID for STOP
+  --state-bucket NAME      Remote state bucket for DESTROY or NUKE
+  --backend-config PATH    Local OpenTofu backend config for DESTROY or NUKE
+  --var-file PATH          Local OpenTofu variable file for DESTROY or NUKE
+  --confirm VALUE           STOP-STAGING, DESTROY-STAGING, or NUKE-STAGING
+  --apply                  Execute the selected action
+  --no-wait                Do not wait for STOP to reach stopped state
+  --help                   Show this help
+
+Environment variables:
+  ENVIRONMENT, ACTION, INSTANCE_ID, AWS_REGION, STATE_BUCKET,
+  CONFIRMATION
+
+DESTROY and NUKE also consume the normal OpenTofu TF_VAR_* environment
+variables. NUKE destroys every resource in the selected backend state; it is
+never available for production.
+EOF
+}
+
+environment="${ENVIRONMENT:-}"
+action="${ACTION:-}"
+application_name="${APPLICATION_NAME:-application}"
+instance_id="${INSTANCE_ID:-}"
+state_bucket="${STATE_BUCKET:-}"
+backend_config=""
+var_file=""
+confirmation="${CONFIRMATION:-}"
+aws_region="${AWS_REGION:-}"
+apply=false
+wait_for_stop=true
+working_directory="$(pwd)"
+
+while (($# > 0)); do
+  case "$1" in
+    --environment) shift; environment="${1:-}" ;;
+    --action) shift; action="${1:-}" ;;
+    --application-name) shift; application_name="${1:-}" ;;
+    --instance-id) shift; instance_id="${1:-}" ;;
+    --state-bucket) shift; state_bucket="${1:-}" ;;
+    --backend-config) shift; backend_config="${1:-}" ;;
+    --var-file) shift; var_file="${1:-}" ;;
+    --confirm) shift; confirmation="${1:-}" ;;
+    --apply) apply=true ;;
+    --no-wait) wait_for_stop=false ;;
+    --help) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+  shift
+done
+
+environment="${environment:?--environment or ENVIRONMENT is required}"
+action="${action:?--action or ACTION is required}"
+aws_region="${aws_region:?AWS_REGION is required}"
+
+if [[ ! "$application_name" =~ ^[a-z][a-z0-9-]{1,32}$ ]]; then
+  echo "application name must be 2-33 lowercase letters, numbers, or hyphens" >&2
+  exit 1
+fi
+
+if [[ "$environment" != "staging" ]]; then
+  echo "refusing to operate on '$environment'; only staging is supported" >&2
+  exit 1
+fi
+
+case "$action" in
+  STOP|DESTROY|NUKE) ;;
+  *) echo "--action must be STOP, DESTROY, or NUKE" >&2; exit 1 ;;
+esac
+
+command -v aws >/dev/null 2>&1 || {
+  echo "aws CLI is required" >&2
+  exit 1
+}
+
+case "$action" in
+  STOP) expected_confirmation="STOP-STAGING" ;;
+  DESTROY) expected_confirmation="DESTROY-STAGING" ;;
+  NUKE) expected_confirmation="NUKE-STAGING" ;;
+esac
+
+if [[ "$apply" == true && "$confirmation" != "$expected_confirmation" ]]; then
+  echo "--apply requires --confirm $expected_confirmation" >&2
+  exit 1
+fi
+
+if [[ "$action" != "STOP" && -n "$state_bucket" && ! "$state_bucket" =~ ^[a-z0-9][a-z0-9.-]+$ ]]; then
+  echo "state bucket must be an S3 bucket name" >&2
+  exit 1
+fi
+
+stop_instance() {
+  if [[ -n "$instance_id" && ! "$instance_id" =~ ^i-[0-9a-f]+$ ]]; then
+    echo "instance ID must be a valid EC2 instance ID" >&2
+    exit 1
+  fi
+
+  if [[ -z "$instance_id" ]]; then
+    instance_ids_text="$(aws ec2 describe-instances \
+      --region "$aws_region" \
+      --filters \
+        "Name=tag:Application,Values=$application_name" \
+        'Name=tag:Environment,Values=staging' \
+        'Name=tag:Role,Values=backend' \
+        'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+      --query 'Reservations[].Instances[].InstanceId' \
+      --output text)"
+
+    if [[ -z "$instance_ids_text" || "$instance_ids_text" == "None" ]]; then
+      echo "no active staging backend instance found" >&2
+      exit 1
+    fi
+
+    read -r -a instance_ids <<< "$instance_ids_text"
+    if ((${#instance_ids[@]} != 1)); then
+      echo "refusing to choose among ${#instance_ids[@]} staging backend instances" >&2
+      printf 'Instances: %s\n' "${instance_ids[*]}" >&2
+      exit 1
+    fi
+    instance_id="${instance_ids[0]}"
+  fi
+
+  instance_details="$(aws ec2 describe-instances \
+    --region "$aws_region" \
+    --instance-ids "$instance_id" \
+    --query 'Reservations[0].Instances[0].[InstanceId,State.Name,Tags[?Key==`Application`].Value | [0],Tags[?Key==`Environment`].Value | [0],Tags[?Key==`Role`].Value | [0]]' \
+    --output text)"
+
+  read -r discovered_id state application_tag environment_tag role_tag <<< "$instance_details"
+  if [[ "$discovered_id" != "$instance_id" || \
+    "$application_tag" != "$application_name" || \
+    "$environment_tag" != "$environment" || \
+    "$role_tag" != "backend" ]]; then
+    echo "refusing instance without the expected $application_name staging backend tags: $instance_id" >&2
+    exit 1
+  fi
+
+  eip_allocation_id="$(aws ec2 describe-addresses \
+    --region "$aws_region" \
+    --filters "Name=instance-id,Values=$instance_id" \
+    --query 'Addresses[0].AllocationId' \
+    --output text)"
+  if [[ -z "$eip_allocation_id" || "$eip_allocation_id" == "None" ]]; then
+    echo "refusing STOP without an attached EIP; apply the staging infrastructure first" >&2
+    exit 1
+  fi
+  echo "EIP allocation: $eip_allocation_id"
+
+  case "$state" in
+    stopped)
+      echo "Staging backend is already stopped: $instance_id"
+      ;;
+    stopping)
+      echo "Staging backend is already stopping: $instance_id"
+      if [[ "$wait_for_stop" == true ]]; then
+        aws ec2 wait instance-stopped --region "$aws_region" --instance-ids "$instance_id"
+        echo "Staging backend is stopped: $instance_id"
+      fi
+      ;;
+    pending|running)
+      echo "Environment: $environment"
+      echo "Action: STOP"
+      echo "Instance: $instance_id"
+      echo "Current state: $state"
+
+      if [[ "$apply" != true ]]; then
+        echo "Dry run only. Re-run with --action STOP --apply --confirm STOP-STAGING."
+        return
+      fi
+
+      aws ec2 stop-instances \
+        --region "$aws_region" \
+        --instance-ids "$instance_id" \
+        --output text \
+        --query 'StoppingInstances[0].[InstanceId,CurrentState.Name,PreviousState.Name]'
+
+      if [[ "$wait_for_stop" == true ]]; then
+        aws ec2 wait instance-stopped --region "$aws_region" --instance-ids "$instance_id"
+        echo "Staging backend is stopped: $instance_id"
+      else
+        echo "Stop requested for staging backend: $instance_id"
+      fi
+      ;;
+    *)
+      echo "refusing unexpected EC2 state '$state' for $instance_id" >&2
+      exit 1
+      ;;
+  esac
+}
+
+destroy_backend() {
+  backend_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")/../backend" && pwd)"
+  backend_config_path="$backend_config"
+  if [[ -n "$backend_config_path" ]]; then
+    [[ "$backend_config_path" = /* ]] || backend_config_path="$working_directory/$backend_config_path"
+    [[ -r "$backend_config_path" ]] || {
+      echo "backend config is not readable: $backend_config_path" >&2
+      exit 1
+    }
+  elif [[ -f "$backend_directory/environments/$environment/backend.hcl" ]]; then
+    backend_config_path="$backend_directory/environments/$environment/backend.hcl"
+  fi
+
+  if [[ -n "$var_file" ]]; then
+    [[ "$var_file" = /* ]] || var_file="$working_directory/$var_file"
+    [[ -r "$var_file" ]] || {
+      echo "variable file is not readable: $var_file" >&2
+      exit 1
+    }
+  fi
+
+  command -v tofu >/dev/null 2>&1 || {
+    echo "tofu is required for $action" >&2
+    exit 1
+  }
+
+  cd "$backend_directory"
+  if [[ -n "$state_bucket" ]]; then
+    tofu init -reconfigure \
+      -backend-config="bucket=$state_bucket" \
+      -backend-config="key=$application_name/backend/$environment/terraform.tfstate" \
+      -backend-config="region=$aws_region" \
+      -backend-config="encrypt=true" \
+      -backend-config="use_lockfile=true"
+  elif [[ -n "$backend_config_path" ]]; then
+    tofu init -reconfigure -backend-config="$backend_config_path"
+  else
+    echo "$action requires --state-bucket or --backend-config" >&2
+    exit 1
+  fi
+
+  plan_file="$(mktemp "${TMPDIR:-/tmp}/${application_name}-${environment}-destroy.XXXXXX.tfplan")"
+  trap 'rm -f "$plan_file"' EXIT
+  plan_arguments=(plan -destroy -var=allow_destructive_destroy=true -out="$plan_file")
+  if [[ "$action" == "DESTROY" ]]; then
+    plan_arguments+=(
+      -target=module.compute
+      -target=module.deployment_artifacts
+      -target=module.dns_tls.aws_route53_record.api
+    )
+  fi
+  if [[ -n "$var_file" ]]; then
+    plan_arguments+=("-var-file=$var_file")
+  fi
+
+  echo "Environment: $environment"
+  echo "Action: $action"
+  if [[ "$action" == "NUKE" ]]; then
+    echo "Destroying every resource in the selected backend OpenTofu state"
+  else
+    echo "Destroying cost-bearing compute, EIP, EBS, backend artifacts, and API DNS"
+    echo "Preserving shared VPC and Route 53 hosted zone"
+  fi
+  tofu "${plan_arguments[@]}"
+
+  if [[ "$apply" != true ]]; then
+    echo "Destroy plan only. Re-run with --apply --confirm $expected_confirmation to execute it."
+    return
+  fi
+
+  tofu apply "$plan_file"
+}
+
+if [[ "$action" == "STOP" ]]; then
+  stop_instance
+else
+  destroy_backend
+fi

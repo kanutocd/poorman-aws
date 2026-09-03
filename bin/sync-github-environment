@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: sync-github-environment [options]
+
+Create or update a GitHub repository environment and synchronize its
+repository-environment variables and secrets through the GitHub CLI.
+The command is a dry run unless --apply is provided.
+
+Options:
+  --repo OWNER/REPOSITORY   GitHub repository (default: GH_REPO or GITHUB_REPOSITORY)
+  --environment NAME        Repository environment to update (required)
+  --variables-file PATH     File containing non-sensitive KEY=VALUE entries
+  --secrets-file PATH       File containing sensitive KEY=VALUE entries
+  --apply                   Create/update the environment values
+  --help                    Show this help
+
+The variables and secrets files are parsed as data, not sourced as shell
+scripts. Blank lines, comments, and an optional leading "export" are allowed.
+Keys must contain only letters, numbers, and underscores. Values may contain
+equals signs and are never printed by this command.
+
+The GitHub CLI uses GH_TOKEN or GITHUB_TOKEN in GitHub Actions and the local
+GitHub CLI authentication when run by an operator. Both invocation paths use
+the same API operations and arguments.
+USAGE
+}
+
+die() {
+  printf 'error: %s\n' "$1" >&2
+  exit 1
+}
+
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+load_env_file() {
+  local file_path="$1"
+  local map_name="$2"
+  local line line_number key value
+
+  [[ -r "$file_path" ]] || die "cannot read environment file: $file_path"
+  line_number=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_number=$((line_number + 1))
+    line="${line%$'\r'}"
+    line="$(trim "$line")"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" == export\ * ]]; then
+      line="${line#export }"
+      line="$(trim "$line")"
+    fi
+    [[ "$line" == *=* ]] || die "$file_path:$line_number must contain KEY=VALUE"
+    key="$(trim "${line%%=*}")"
+    value="${line#*=}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
+      die "$file_path:$line_number has an invalid variable name: $key"
+    }
+    [[ -n "$value" ]] || die "$file_path:$line_number has an empty value: $key"
+    case "$map_name" in
+      variables)
+        [[ ! -v "variables[$key]" ]] || die "$file_path:$line_number defines $key more than once"
+        variables["$key"]="$value"
+        ;;
+      secrets)
+        [[ ! -v "secrets[$key]" ]] || die "$file_path:$line_number defines $key more than once"
+        secrets["$key"]="$value"
+        ;;
+      *)
+        die "internal error: unknown configuration map $map_name"
+        ;;
+    esac
+  done <"$file_path"
+}
+
+print_names() {
+  local map_name="$1"
+  local key
+
+  case "$map_name" in
+    variables)
+      for key in "${!variables[@]}"; do
+        printf '  %s\n' "$key"
+      done | sort
+      ;;
+    secrets)
+      for key in "${!secrets[@]}"; do
+        printf '  %s\n' "$key"
+      done | sort
+      ;;
+  esac
+}
+
+sync_variables() {
+  local key
+
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    printf '%s' "${variables[$key]}" |
+      gh variable set "$key" --env "$environment" --repo "$repo" >/dev/null
+  done < <(for key in "${!variables[@]}"; do printf '%s\n' "$key"; done | sort)
+}
+
+sync_secrets() {
+  local key
+
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    printf '%s' "${secrets[$key]}" |
+      gh secret set "$key" --env "$environment" --repo "$repo" >/dev/null
+  done < <(for key in "${!secrets[@]}"; do printf '%s\n' "$key"; done | sort)
+}
+
+repo="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
+environment=''
+variables_file=''
+secrets_file=''
+apply=false
+
+while (($# > 0)); do
+  case "$1" in
+    --repo)
+      [[ $# -ge 2 ]] || die "--repo requires OWNER/REPOSITORY"
+      repo="$2"
+      shift 2
+      ;;
+    --environment)
+      [[ $# -ge 2 ]] || die "--environment requires a name"
+      environment="$2"
+      shift 2
+      ;;
+    --variables-file)
+      [[ $# -ge 2 ]] || die "--variables-file requires a path"
+      variables_file="$2"
+      shift 2
+      ;;
+    --secrets-file)
+      [[ $# -ge 2 ]] || die "--secrets-file requires a path"
+      secrets_file="$2"
+      shift 2
+      ;;
+    --apply)
+      apply=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown option: $1"
+      ;;
+  esac
+done
+
+command -v gh >/dev/null 2>&1 || die "gh CLI is required"
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "--repo must be OWNER/REPOSITORY"
+[[ "$environment" =~ ^[A-Za-z0-9_.-]+$ ]] || die "--environment contains invalid characters"
+[[ -n "$variables_file" || -n "$secrets_file" ]] ||
+  die "at least one of --variables-file or --secrets-file is required"
+
+declare -A variables=()
+declare -A secrets=()
+[[ -z "$variables_file" ]] || load_env_file "$variables_file" variables
+[[ -z "$secrets_file" ]] || load_env_file "$secrets_file" secrets
+
+printf 'Repository: %s\n' "$repo"
+printf 'Environment: %s\n' "$environment"
+printf 'Variables:\n'
+print_names variables
+printf 'Secrets:\n'
+print_names secrets
+
+if [[ "$apply" != true ]]; then
+  printf '%s\n' 'Dry run only. Re-run with --apply to create/update the environment values.'
+  exit 0
+fi
+
+gh api --method PUT "repos/$repo/environments/$environment" >/dev/null
+sync_variables
+sync_secrets
+printf 'Synchronized GitHub environment: %s\n' "$environment"

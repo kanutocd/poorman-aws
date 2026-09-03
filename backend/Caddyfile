@@ -1,0 +1,17 @@
+{
+  email {$ACME_EMAIL}
+}
+
+{$APPLICATION_API_HOSTNAME} {
+  request_body {
+    max_size 2MB
+  }
+
+  encode gzip
+  reverse_proxy application:9292 {
+    transport http {
+      dial_timeout 5s
+      response_header_timeout 120s
+    }
+  }
+}

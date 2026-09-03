@@ -1,0 +1,157 @@
+name: Roll back frontend application
+
+on:
+  workflow_call:
+    inputs:
+      infrastructure_repository:
+        description: "Repository containing the reusable infrastructure"
+        required: true
+        type: string
+      infrastructure_ref:
+        description: "Ref of the reusable infrastructure to execute"
+        required: false
+        default: main
+        type: string
+      consumer_ref:
+        description: "Consumer repository ref to redeploy"
+        required: true
+        type: string
+      application_name:
+        description: "Application identifier used in workflow names"
+        required: true
+        type: string
+      environment:
+        description: "Frontend deployment environment"
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region used by the frontend deployment"
+        required: true
+        type: string
+      frontend_directory:
+        description: "Consumer repository directory containing the frontend"
+        required: false
+        default: frontend
+        type: string
+      build_command:
+        description: "Command that builds the frontend, run inside frontend_directory"
+        required: true
+        type: string
+      deploy_command:
+        description: "Command that deploys the frontend, run inside frontend_directory"
+        required: true
+        type: string
+      output_entrypoint:
+        description: "Optional built entrypoint to verify, relative to frontend_directory"
+        required: false
+        type: string
+      frontend_url:
+        description: "Optional public frontend URL for acceptance checks"
+        required: false
+        type: string
+      api_url:
+        description: "Optional public API URL for acceptance checks"
+        required: false
+        type: string
+      frontend_origin:
+        description: "Optional origin used by CORS and WebSocket checks"
+        required: false
+        type: string
+      api_base_url:
+        description: "Optional non-secret API URL passed to the frontend command"
+        required: false
+        type: string
+      frontend_certificate_arn:
+        description: "Optional frontend certificate ARN passed to the deployment command"
+        required: false
+        type: string
+    secrets:
+      aws_role_arn:
+        description: "IAM role allowed to deploy the frontend"
+        required: true
+      application_api_token:
+        description: "Optional bearer token used by acceptance checks"
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ inputs.application_name }}-frontend-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Roll back ${{ inputs.environment }} frontend
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    env:
+      APPLICATION_NAME: ${{ inputs.application_name }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      FRONTEND_DIRECTORY: ${{ inputs.frontend_directory }}
+      FRONTEND_BUILD_COMMAND: ${{ inputs.build_command }}
+      FRONTEND_DEPLOY_COMMAND: ${{ inputs.deploy_command }}
+      API_BASE_URL: ${{ inputs.api_base_url }}
+      FRONTEND_CERTIFICATE_ARN: ${{ inputs.frontend_certificate_arn }}
+      FRONTEND_URL: ${{ inputs.frontend_url }}
+      API_URL: ${{ inputs.api_url }}
+      FRONTEND_ORIGIN: ${{ inputs.frontend_origin }}
+      APPLICATION_API_TOKEN: ${{ secrets.application_api_token }}
+
+    steps:
+      - name: Check out consumer repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.consumer_ref }}
+
+      - name: Check out infrastructure repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.infrastructure_repository }}
+          ref: ${{ inputs.infrastructure_ref }}
+          path: poorman-aws
+
+      - name: Build rollback frontend
+        run: |
+          cd "$FRONTEND_DIRECTORY"
+          bash -euo pipefail -c "$FRONTEND_BUILD_COMMAND"
+
+      - name: Check emitted frontend assets
+        if: inputs.output_entrypoint != ''
+        env:
+          OUTPUT_ENTRYPOINT: ${{ inputs.output_entrypoint }}
+        run: |
+          test -s "$FRONTEND_DIRECTORY/$OUTPUT_ENTRYPOINT"
+          if rg -n -i 'AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|AKIA[0-9A-Z]{16}' "$FRONTEND_DIRECTORY"; then
+            echo "Sensitive material detected in frontend build output" >&2
+            exit 1
+          fi
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-frontend-rollback-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Redeploy known-good frontend
+        run: |
+          cd "$FRONTEND_DIRECTORY"
+          bash -euo pipefail -c "$FRONTEND_DEPLOY_COMMAND"
+
+      - name: Run rollback acceptance checks
+        if: inputs.frontend_url != '' && inputs.api_url != ''
+        run: |
+          for attempt in $(seq 1 12); do
+            if bash poorman-aws/bin/frontend-live-smoke; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "Rollback acceptance checks failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "Rolled-back frontend is still propagating; retrying in 15 seconds (attempt $((attempt + 1))/12)"
+            sleep 15
+          done

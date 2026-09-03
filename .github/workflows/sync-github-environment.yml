@@ -1,0 +1,68 @@
+name: Sync GitHub environment
+
+on:
+  workflow_call:
+    inputs:
+      source_repository:
+        description: Repository containing the poorman-aws synchronizer
+        required: true
+        type: string
+      source_ref:
+        description: Ref of the poorman-aws repository to execute
+        required: false
+        default: main
+        type: string
+      environment:
+        description: Repository environment to create or update
+        required: true
+        type: string
+      variables_dotenv:
+        description: Newline-delimited non-sensitive KEY=VALUE entries
+        required: false
+        default: ''
+        type: string
+    secrets:
+      github_token:
+        description: Optional token with permission to manage repository environments
+        required: false
+      environment_secrets:
+        description: Newline-delimited sensitive KEY=VALUE entries
+        required: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  synchronize:
+    name: Synchronize ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out poorman-aws
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          path: poorman-aws
+
+      - name: Write configuration files
+        env:
+          VARIABLES_DOTENV: ${{ inputs.variables_dotenv }}
+          SECRETS_DOTENV: ${{ secrets.environment_secrets }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$VARIABLES_DOTENV" > "$RUNNER_TEMP/environment.variables.env"
+          printf '%s\n' "$SECRETS_DOTENV" > "$RUNNER_TEMP/environment.secrets.env"
+
+      - name: Synchronize environment
+        env:
+          GH_TOKEN: ${{ secrets.github_token || github.token }}
+        run: |
+          set -euo pipefail
+          poorman-aws/bin/sync-github-environment \
+            --repo "${{ github.repository }}" \
+            --environment "${{ inputs.environment }}" \
+            --variables-file "$RUNNER_TEMP/environment.variables.env" \
+            --secrets-file "$RUNNER_TEMP/environment.secrets.env" \
+            --apply

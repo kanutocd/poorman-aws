@@ -1,0 +1,134 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: poorman-aws-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  opentofu:
+    name: OpenTofu
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2
+
+      - name: Check OpenTofu formatting
+        run: tofu fmt -check -recursive backend
+
+      - name: Initialize without remote state
+        working-directory: backend
+        run: tofu init -backend=false -input=false
+
+      - name: Validate OpenTofu configuration
+        working-directory: backend
+        run: tofu validate
+
+      - name: Run OpenTofu module tests
+        run: |
+          for module_path in backend/modules/deployment-artifacts backend/modules/networking; do
+            (
+              cd "$module_path"
+              tofu init -backend=false -input=false
+              tofu test -no-color
+            )
+          done
+
+  packer:
+    name: Packer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@v3
+
+      - name: Initialize Packer plugins
+        working-directory: backend/packer
+        run: packer init -upgrade=false .
+
+      - name: Check Packer formatting
+        working-directory: backend/packer
+        run: packer fmt -check .
+
+      - name: Validate Packer template
+        working-directory: backend/packer
+        run: packer validate -var-file=example.pkrvars.hcl .
+
+  compose:
+    name: Docker Compose
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Validate Compose configuration
+        env:
+          APPLICATION_IMAGE: example/application:quality
+          CADDY_IMAGE: caddy:2.10.2
+          ACME_EMAIL: ops@example.test
+          APPLICATION_API_HOSTNAME: api.example.test
+        run: |
+          set -euo pipefail
+          : > backend/runtime.env
+          trap 'rm -f backend/runtime.env' EXIT
+          docker compose -f backend/compose.production.yaml config --quiet
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends shellcheck
+
+      - name: Check Bash syntax
+        run: bash -n bin/* backend/scripts/* backend/packer/scripts/*.sh
+
+      - name: Run ShellCheck
+        run: shellcheck --severity=warning bin/* backend/scripts/* backend/packer/scripts/*.sh
+
+  actionlint:
+    name: GitHub Actions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run actionlint
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/repo" \
+            --workdir /repo \
+            rhysd/actionlint@sha256:a0383f60d92601e2694e24b24d37df7b6a40bed7cedbc447611c50009bf02d94
+
+  hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Check generated artifacts and secrets
+        run: bash bin/quality-hygiene

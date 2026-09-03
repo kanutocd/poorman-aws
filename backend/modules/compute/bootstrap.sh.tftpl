@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+application_name="${application_name}"
+environment="${environment}"
+root_dir="${root_dir}"
+artifact_bucket_name="${artifact_bucket_name}"
+artifact_prefix="${artifact_prefix}"
+ssm_parameter_path="${ssm_parameter_path}"
+data_volume_id="${data_volume_id}"
+data_device_name="${data_device_name}"
+data_mount_point="${data_mount_point}"
+
+install -d -m 0750 -o root -g root "$data_mount_point"
+
+data_device=""
+for attempt in $(seq 1 60); do
+  nvme_device="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$data_volume_id"
+  if [ -b "$nvme_device" ]; then
+    data_device="$nvme_device"
+    break
+  fi
+
+  if [ -b "$data_device_name" ]; then
+    data_device="$data_device_name"
+    break
+  fi
+
+  sleep 2
+done
+
+if [ -z "$data_device" ]; then
+  echo "Data volume $data_volume_id was not attached" >&2
+  exit 1
+fi
+
+if ! blkid "$data_device" >/dev/null 2>&1; then
+  mkfs.ext4 -F "$data_device"
+fi
+
+data_uuid="$(blkid -s UUID -o value "$data_device")"
+grep -q "^UUID=$data_uuid $data_mount_point " /etc/fstab || \
+  printf 'UUID=%s %s ext4 defaults,nofail 0 2\n' "$data_uuid" "$data_mount_point" >>/etc/fstab
+mountpoint -q "$data_mount_point" || mount "$data_mount_point"
+
+docker_data_root="$data_mount_point/docker"
+install -d -m 0711 -o root -g root "$docker_data_root"
+if [ -f /etc/docker/daemon.json ]; then
+  jq --arg data_root "$docker_data_root" '. + {"data-root": $data_root}' \
+    /etc/docker/daemon.json >/etc/docker/daemon.json.tmp
+else
+  printf '{"data-root":"%s"}\n' "$docker_data_root" >/etc/docker/daemon.json.tmp
+fi
+mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json
+systemctl restart docker
+
+install -d -m 0750 -o root -g root \
+  "$root_dir" \
+  "$root_dir/releases" \
+  "/etc/${application_name}"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker must be present in the reviewed AMI" >&2
+  exit 1
+fi
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Docker Compose must be present in the reviewed AMI" >&2
+  exit 1
+fi
+
+for required_command in aws blkid cut docker jq flock mkfs.ext4 mount mountpoint seq sha256sum zstd; do
+  if ! command -v "$required_command" >/dev/null 2>&1; then
+    echo "$required_command must be present in the reviewed AMI" >&2
+    exit 1
+  fi
+done
+
+cat >"/etc/${application_name}/environment" <<EOF
+APPLICATION_NAME=${application_name}
+APPLICATION_IMAGE_REPOSITORY=${application_name}
+ENVIRONMENT=${environment}
+RELEASE_ROOT=${root_dir}
+ARTIFACT_BUCKET=${artifact_bucket_name}
+ARTIFACT_PREFIX=${artifact_prefix}
+SSM_PARAMETER_PATH=${ssm_parameter_path}
+COMPOSE_PROJECT_NAME=${application_name}-${environment}
+EOF
+chmod 0600 "/etc/${application_name}/environment"
+
+printf '%s' '${render_runtime_env_script_b64}' | base64 --decode >/usr/local/bin/${application_name}-render-runtime-env
+printf '%s' '${activate_release_script_b64}' | base64 --decode >/usr/local/bin/${application_name}-activate-release
+chmod 0750 /usr/local/bin/${application_name}-render-runtime-env /usr/local/bin/${application_name}-activate-release
+
+cat >"/etc/systemd/system/${application_name}-compose.service" <<UNIT
+[Unit]
+Description=${application_name} ${environment} Docker Compose stack
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$${root_dir}/current
+ExecStart=/usr/bin/test -f $${root_dir}/current/compose.yaml
+ExecStart=/usr/bin/docker compose --project-name ${application_name}-${environment} --env-file /etc/${application_name}/environment --env-file $${root_dir}/current/runtime.env -f $${root_dir}/current/compose.yaml up -d
+ExecStop=/usr/bin/docker compose --project-name ${application_name}-${environment} --env-file /etc/${application_name}/environment --env-file $${root_dir}/current/runtime.env -f $${root_dir}/current/compose.yaml down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl mask --now sshd.service
