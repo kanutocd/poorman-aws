@@ -48,8 +48,14 @@ All notable changes to this project are documented in this file.
   non-secret values now require an explicit repeated `--non-secret NAME`
   declaration.
 - Replaced the GitHub deployment policy's wildcard `ec2:*` action with an
-  explicit EC2 operation allowlist and require a Route 53 hosted-zone ID unless
-  the bootstrap command is explicitly creating the hosted zone.
+  explicit EC2 operation allowlist, tag-scoped destructive operations, and
+  separate IAM `PassRole` scope; require a Route 53 hosted-zone ID unless the
+  bootstrap command is explicitly creating the hosted zone.
+- Added production destroy sentinels to each backend child module so targeted
+  module destroy plans cannot bypass the root production guard.
+- Threaded the environment safety contract through networking, compute,
+  deployment-artifact, and DNS/TLS module boundaries, with staging fixtures
+  updated for the new required module input.
 - Extended local and CI quality coverage to include the compute module,
   policy-contract checks, and ShellCheck/Bash checks for repository test
   scripts.
