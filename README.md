@@ -202,8 +202,6 @@ The caller must provide `github_token` or grant the called workflow's
 secrets. Keep `environment_secrets` as a protected multiline secret; never
 pass secret values through `with` inputs.
 
-## Reusable workflows
-
 ## Consumer wrapper
 
 The consumer wrapper provides a common contract for cloned and remote
@@ -339,6 +337,7 @@ The repository publishes these consumer-facing `workflow_call` entry points:
 - `.github/workflows/rollback-backend.yml`
 - `.github/workflows/deploy-frontend.yml`
 - `.github/workflows/rollback-frontend.yml`
+- `.github/workflows/kill-frontend-non-production.yml`
 - `.github/workflows/kill-non-production.yml`
 - `.github/workflows/bootstrap-backend-parameters.yml`
 - `.github/workflows/sync-github-environment.yml`

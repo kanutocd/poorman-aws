@@ -29,6 +29,8 @@ All notable changes to this project are documented in this file.
   callers when configured, and frontend adapter contract tests cover dry-run,
   confirmation, immutable refs, production refusal, dispatch payloads, and
   generated workflow safety.
+- Corrected the reusable-workflow inventory to include the frontend lifecycle
+  workflow and removed an empty duplicate README heading.
 - Documented `v0.1.0` as the baseline release reference and full commit SHAs
   as the required dogfooding/testing reference.
 - Hardened every reusable workflow and environment synchronizer against
