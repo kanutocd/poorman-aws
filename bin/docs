@@ -12,6 +12,7 @@ Usage: bin/docs <command> [options]
 
 Commands:
   build [--strict]  Build the documentation site into site/
+  lint              Run Vale, Markdownlint, and offline Lychee
   serve             Serve a local documentation preview
   clean             Remove generated documentation output
 EOF
@@ -58,6 +59,33 @@ build() {
   "${docs_command}" "${options[@]}"
 }
 
+find_tool() {
+  local cached_path="$1" command_name="$2"
+  if [[ -x "$cached_path" ]]; then
+    printf '%s\n' "$cached_path"
+  elif command -v "$command_name" >/dev/null 2>&1; then
+    command -v "$command_name"
+  else
+    die "$command_name is required; install the documentation lint tools or restore .docs-tools"
+  fi
+}
+
+lint() {
+  (($# == 0)) || die "lint does not accept options"
+  require_project
+
+  local tool_directory="${repository_root}/.docs-tools"
+  local vale_command markdownlint_command lychee_command
+  vale_command="$(find_tool "${tool_directory}/bin/vale" vale)"
+  markdownlint_command="$(find_tool "${tool_directory}/node_modules/.bin/markdownlint-cli2" markdownlint-cli2)"
+  lychee_command="$(find_tool "${tool_directory}/bin/lychee" lychee)"
+
+  cd "${repository_root}"
+  "${vale_command}" docs/mkdocs README.md CHANGELOG.md
+  "${markdownlint_command}" 'docs/mkdocs/**/*.md' README.md CHANGELOG.md
+  "${lychee_command}" --offline 'docs/mkdocs/**/*.md'
+}
+
 serve() {
   select_builder
   require_project
@@ -76,6 +104,7 @@ main() {
   [[ $# -gt 0 ]] || { usage >&2; exit 2; }
   case "$1" in
     build) shift; build "$@" ;;
+    lint) shift; lint "$@" ;;
     serve) shift; (($# == 0)) || die "serve does not accept options"; serve ;;
     clean) shift; (($# == 0)) || die "clean does not accept options"; clean ;;
     help|-h|--help) usage ;;

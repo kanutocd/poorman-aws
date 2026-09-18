@@ -55,12 +55,12 @@ When the optional documentation linters are installed, run them from the
 repository root:
 
 ```bash
-vale docs/mkdocs README.md CHANGELOG.md
-markdownlint-cli2 "**/*.md"
-lychee --offline "docs/mkdocs/**/*.md"
+bin/docs lint
 ```
 
-The offline Lychee mode checks local links without making external network
-requests. A documentation build can still succeed while a network-backed link
-is unavailable; treat that as a link-check result, not an infrastructure
-failure.
+`bin/docs lint` runs Vale, Markdownlint, and offline Lychee against the public
+documentation sources. It prefers cached tools under `.docs-tools/` and falls
+back to tools installed on the local `PATH`. The offline Lychee mode checks
+local links without making external network requests. A documentation build
+can still succeed while a network-backed link is unavailable; treat that as a
+link-check result, not an infrastructure failure.
