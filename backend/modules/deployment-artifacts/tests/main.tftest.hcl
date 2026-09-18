@@ -10,6 +10,7 @@ run "creates_private_versioned_artifact_bucket" {
   }
 
   variables {
+    environment     = "staging"
     name            = "example-staging-backend"
     bucket_name     = "example-staging-artifacts"
     artifact_prefix = "releases"

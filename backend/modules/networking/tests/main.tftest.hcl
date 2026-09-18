@@ -10,6 +10,7 @@ run "creates_public_subnet_with_restricted_edge_ports" {
   }
 
   variables {
+    environment        = "staging"
     name               = "example-staging-backend"
     availability_zone  = "us-east-1a"
     vpc_cidr           = "10.70.0.0/24"
