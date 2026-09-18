@@ -64,8 +64,11 @@ does not shrink an existing root volume; rebuild the AMI and apply the updated
 The retained data volume is protected from accidental OpenTofu destruction and
 is attached to the replacement host by the compute module. The volume is
 mounted at `/srv/application-data` and Docker state is stored beneath that mount.
-Recovery automation remains a follow-up hardening slice; a retained volume is
-not a backup and must not be deleted without a recovery decision.
+Production enables AWS Backup by default: daily snapshots are retained for 7
+days and weekly snapshots for 28 days. Set `backup_kms_key_arn` to use an
+approved customer-managed key; otherwise the AWS Backup vault uses its default
+AWS Backup encryption. Backup restore rehearsals remain required before
+claiming a recovery objective.
 
 Verify the allocation after planning or applying with:
 
@@ -403,9 +406,10 @@ AWS_PROFILE=administrator AWS_REGION=ap-southeast-1 \
   --apply
 ```
 
-The env file must contain the approved runtime variable names. Provider keys,
-tokens, and ACME email are written as `SecureString`; image names, hostnames,
-origins, models, and other non-secret settings use `String` parameters.
+The env file must contain the approved runtime variable names. Provider keys
+and runtime values are written as `SecureString` by default. Explicitly pass
+`--non-secret NAME` to classify a documented hostname, origin, image name,
+model, or other non-secret setting as a `String` parameter.
 
 For an anonymous deployment, remove any previously configured API token instead
 of placing an empty value in SSM Parameter Store:

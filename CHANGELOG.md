@@ -8,6 +8,12 @@ All notable changes to this project are documented in this file.
 
 - Extracted application-neutral AWS infrastructure building blocks for a
   cost-conscious single-host deployment model.
+- Added production-only AWS Backup coverage for the retained data EBS volume,
+  with daily snapshots retained for 7 days, weekly snapshots retained for 28
+  days, and optional customer-managed KMS encryption.
+- Added an offline policy contract test covering production destruction
+  protection, EC2 action boundaries, Route 53 scoping, release retention,
+  backup configuration, and secure runtime-parameter defaults.
 - Added reusable `workflow_call` entry points for AMI builds, backend
   infrastructure, backend releases and rollbacks, frontend deployments and
   rollbacks, environment synchronization, and non-production lifecycle
@@ -30,6 +36,20 @@ All notable changes to this project are documented in this file.
 - Genericized application names, hostnames, resource names, SSM paths, tags,
   artifact prefixes, and deployment commands so consumers provide their own
   values.
+- Added a production-only OpenTofu destroy sentinel so ordinary production
+  destroy plans fail closed before resource mutation.
+- Added a 30-day default expiration for current immutable release objects;
+  noncurrent versions continue to expire after 30 days and incomplete
+  multipart uploads after one day.
+- Changed runtime parameter provisioning to use `SecureString` by default;
+  non-secret values now require an explicit repeated `--non-secret NAME`
+  declaration.
+- Replaced the GitHub deployment policy's wildcard `ec2:*` action with an
+  explicit EC2 operation allowlist and require a Route 53 hosted-zone ID unless
+  the bootstrap command is explicitly creating the hosted zone.
+- Extended local and CI quality coverage to include the compute module,
+  policy-contract checks, and ShellCheck/Bash checks for repository test
+  scripts.
 - Decoupled frontend delivery from backend infrastructure. Frontend consumers
   own their application assets, S3/CloudFront resources, certificate, and
   frontend DNS alias; `API_BASE_URL` is an optional handoff.
