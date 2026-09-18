@@ -113,6 +113,18 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
     --aws-region us-east-2 >/dev/null
   grep -Fq 'uses: kanutocd/poorman-aws/.github/workflows/deploy-backend.yml@v1.5.4' \
     .github/workflows/poorman-aws-backend-deploy.yml
+  for workflow in \
+    .github/workflows/poorman-aws-backend-infra.yml \
+    .github/workflows/poorman-aws-backend-deploy.yml \
+    .github/workflows/poorman-aws-backend-rollback.yml \
+    .github/workflows/poorman-aws-backend-ami.yml \
+    .github/workflows/poorman-aws-lifecycle.yml \
+    .github/workflows/poorman-aws-backend-parameters.yml; do
+    grep -Fq '@v1.5.4' "$workflow"
+    grep -Fq 'infrastructure_ref: v1.5.4' "$workflow"
+  done
+  ! sed -n '/workflow_dispatch:/,/jobs:/p' .github/workflows/poorman-aws-*.yml |
+    grep -q 'infrastructure_ref:'
   grep -Fq 'state_bucket: onboard-state' .poorman-aws.yml
   ! grep -R -Eq '(^|/)(infra|scripts)/|\.tf$|AWS_SECRET|API_KEY=' .github .poorman-aws.yml
   printf '\n# consumer-owned change\n' >> .github/workflows/poorman-aws-backend-deploy.yml
@@ -136,7 +148,8 @@ touch "$temporary_dir/interactive/backend/Dockerfile"
 (
   cd "$temporary_dir/interactive"
   printf 'interactive-app\nv1.5.4\nus-east-2a\nexample.test\ninteractive-state\ny\n' |
-    "$wrapper" onboard >/dev/null
+    "$wrapper" onboard >/dev/null 2>"$temporary_dir/interactive-onboard.stderr"
+  grep -Fq 'onboarding change: .poorman-aws.yml' "$temporary_dir/interactive-onboard.stderr"
   grep -Fq 'application_name: interactive-app' .poorman-aws.yml
   grep -Fq 'state_bucket: interactive-state' .poorman-aws.yml
 )

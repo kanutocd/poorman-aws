@@ -766,15 +766,36 @@ write_onboarding_files() {
   onboard_cleanup
 }
 
+show_onboarding_diff() {
+  local index target source
+  command -v diff >/dev/null 2>&1 || die 'diff is required to review onboarding changes'
+  for index in "${!generated_targets[@]}"; do
+    target="${generated_targets[$index]}"
+    source="${generated_sources[$index]}"
+    if [[ -e "$target" ]] && cmp -s "$source" "$target"; then continue; fi
+    printf '\n--- onboarding change: %s ---\n' "$target" >&2
+    if [[ -e "$target" ]]; then
+      diff -u --label "$target (consumer)" --label "$target (generated)" "$target" "$source" || true
+    else
+      diff -u --label "$target (consumer: absent)" --label "$target (generated)" /dev/null "$source" || true
+    fi
+  done
+}
+
 onboard() {
   require_onboarding_values
+  prepare_onboarding_files
   if [[ "$non_interactive" == false ]]; then
+    show_onboarding_diff
     printf 'Generate consumer integration files for %s? [y/N]: ' "${values[application_name]}" >&2
     local confirmation
     IFS= read -r confirmation
-    [[ "$confirmation" =~ ^[Yy]$ ]] || { echo 'onboarding cancelled'; return 0; }
+    if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
+      onboard_cleanup
+      echo 'onboarding cancelled'
+      return 0
+    fi
   fi
-  prepare_onboarding_files
   write_onboarding_files
 }
 
