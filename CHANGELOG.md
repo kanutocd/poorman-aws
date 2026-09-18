@@ -20,6 +20,15 @@ All notable changes to this project are documented in this file.
 
 ### Consumer wrapper
 
+- Documented the implementation plan for generic frontend deploy, rollback,
+  smoke, and guarded lifecycle adapters, including configuration precedence,
+  safety boundaries, onboarding, validation, and release gates.
+- Implemented the generic frontend wrapper adapters for deploy, rollback,
+  smoke, and guarded non-production lifecycle operations. Frontend settings
+  now participate in YAML/CLI precedence, onboarding generates thin frontend
+  callers when configured, and frontend adapter contract tests cover dry-run,
+  confirmation, immutable refs, production refusal, dispatch payloads, and
+  generated workflow safety.
 - Documented `v0.1.0` as the baseline release reference and full commit SHAs
   as the required dogfooding/testing reference.
 - Hardened every reusable workflow and environment synchronizer against

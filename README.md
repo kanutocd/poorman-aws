@@ -275,7 +275,28 @@ Examples:
 ./bin/poorman-aws rollback --environment staging --release-id abc1234 \
   --apply --confirm ROLLBACK-STAGING
 ./bin/poorman-aws lifecycle --action STOP
+./bin/poorman-aws frontend smoke
+./bin/poorman-aws frontend deploy --environment staging \
+  --apply --confirm FRONTEND-DEPLOY-STAGING
+./bin/poorman-aws frontend rollback --environment staging \
+  --consumer-ref 0123456789abcdef0123456789abcdef01234567 \
+  --apply --confirm FRONTEND-ROLLBACK-STAGING
+./bin/poorman-aws frontend lifecycle --action DESTROY \
+  --consumer-ref 0123456789abcdef0123456789abcdef01234567 \
+  --apply --confirm FRONTEND-DESTROY-STAGING
 ```
+
+Frontend adapters use the consumer's configured build, deploy, and removal
+commands while keeping workflow orchestration, smoke checks, immutable ref
+guards, and frontend-only AWS role boundaries in `poorman-aws`. `frontend
+smoke` is non-mutating and does not require AWS or GitHub credentials. Deploy,
+rollback, and lifecycle commands require an immutable infrastructure ref;
+rollback and lifecycle also require an immutable consumer ref.
+
+When frontend settings are present in `.poorman-aws.yml`, onboarding generates
+thin frontend deploy, rollback, and guarded lifecycle callers alongside the
+backend callers. The wrapper's configuration precedence remains built-in
+defaults, YAML configuration, then command-line options.
 
 Supplemental consumer release files can be configured as comma-separated
 `DEST=PATH` entries under `backend.supplemental_files`, or supplied with
