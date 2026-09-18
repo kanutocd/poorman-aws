@@ -84,6 +84,7 @@ jobs:
 
     env:
       APPLICATION_NAME: ${{ inputs.application_name }}
+      ENVIRONMENT: ${{ inputs.environment }}
       AWS_REGION: ${{ inputs.aws_region }}
       FRONTEND_DIRECTORY: ${{ inputs.frontend_directory }}
       FRONTEND_BUILD_COMMAND: ${{ inputs.build_command }}

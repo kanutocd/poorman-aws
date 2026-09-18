@@ -41,6 +41,9 @@ command_clear_parameter=''
 command_non_secret_parameters=()
 command_allow_type_change=false
 command_supplemental_files=()
+command_consumer_ref=''
+command_cors_path=''
+command_websocket_path=''
 
 usage() {
   cat <<'EOF'
@@ -55,6 +58,10 @@ Commands:
   plan|apply             Dispatch a protected infrastructure plan or apply.
   release|rollback      Dispatch an immutable backend release operation.
   lifecycle              Dispatch guarded non-production lifecycle operations.
+  frontend deploy       Dispatch the consumer frontend deployment workflow.
+  frontend rollback     Dispatch a known-good frontend rollback.
+  frontend lifecycle    Dispatch guarded non-production frontend lifecycle.
+  frontend smoke        Run non-mutating frontend/API acceptance checks.
 
 Global options:
   --config PATH         Explicit YAML configuration file.
@@ -68,6 +75,10 @@ Global options:
   --infra               Check OpenTofu and infrastructure prerequisites.
   --ami                 Check Packer and AMI-build prerequisites.
   --github              Check GitHub CLI authentication.
+  Frontend options: --frontend-directory, --build-command, --deploy-command,
+  --remove-command, --output-entrypoint, --frontend-url, --api-url,
+  --frontend-origin, --api-base-url, --frontend-hostname,
+  --frontend-certificate-arn, --consumer-ref, --cors-path, --websocket-path.
   Operational options are accepted after the command; use --help with a
   command in a consumer repository for the required values.
   --help, --version
@@ -88,7 +99,11 @@ allowed_key() {
     backend.supplemental_files|defaults.instance_type|defaults.root_volume_size_gib|\
     defaults.data_volume_size_gib|defaults.release_retention_days|\
     defaults.enable_data_volume_backups|defaults.backup_kms_key_arn|\
-    defaults.retain_data_volume|defaults.retain_eip)
+    defaults.retain_data_volume|defaults.retain_eip|frontend.directory|\
+    frontend.build_command|frontend.deploy_command|frontend.remove_command|\
+    frontend.output_entrypoint|frontend.frontend_url|frontend.api_url|\
+    frontend.frontend_origin|frontend.api_base_url|frontend.frontend_hostname|\
+    frontend.frontend_certificate_arn|frontend.aws_role_secret)
       return 0 ;;
     *) return 1 ;;
   esac
@@ -121,6 +136,11 @@ allowed = {
     "defaults.data_volume_size_gib", "defaults.release_retention_days",
     "defaults.enable_data_volume_backups", "defaults.backup_kms_key_arn",
     "defaults.retain_data_volume", "defaults.retain_eip",
+    "frontend.directory", "frontend.build_command", "frontend.deploy_command",
+    "frontend.remove_command", "frontend.output_entrypoint", "frontend.frontend_url",
+    "frontend.api_url", "frontend.frontend_origin", "frontend.api_base_url",
+    "frontend.frontend_hostname", "frontend.frontend_certificate_arn",
+    "frontend.aws_role_secret",
 }
 
 with open(sys.argv[1], encoding="utf-8") as stream:
@@ -159,6 +179,10 @@ allowed = %w[
   defaults.instance_type defaults.root_volume_size_gib defaults.data_volume_size_gib
   defaults.release_retention_days defaults.enable_data_volume_backups
   defaults.backup_kms_key_arn defaults.retain_data_volume defaults.retain_eip
+  frontend.directory frontend.build_command frontend.deploy_command
+  frontend.remove_command frontend.output_entrypoint frontend.frontend_url
+  frontend.api_url frontend.frontend_origin frontend.api_base_url
+  frontend.frontend_hostname frontend.frontend_certificate_arn frontend.aws_role_secret
 ]
 document = YAML.safe_load(File.read(ARGV.fetch(0)), permitted_classes: [], aliases: false) || {}
 abort 'configuration root must be a YAML mapping' unless document.is_a?(Hash)
@@ -208,6 +232,18 @@ load_defaults() {
   set_value defaults.backup_kms_key_arn '' default
   set_value defaults.retain_data_volume true default
   set_value defaults.retain_eip true default
+  set_value frontend.directory frontend default
+  set_value frontend.build_command 'pnpm build' default
+  set_value frontend.deploy_command 'pnpm exec sst deploy --stage "$ENVIRONMENT"' default
+  set_value frontend.remove_command 'pnpm exec sst remove --stage "$ENVIRONMENT"' default
+  set_value frontend.output_entrypoint dist/index.html default
+  set_value frontend.frontend_url '' default
+  set_value frontend.api_url '' default
+  set_value frontend.frontend_origin '' default
+  set_value frontend.api_base_url '' default
+  set_value frontend.frontend_hostname '' default
+  set_value frontend.frontend_certificate_arn '' default
+  set_value frontend.aws_role_secret AWS_FRONTEND_ROLE_ARN default
 }
 
 load_config() {
@@ -261,6 +297,21 @@ parse_args() {
       --non-secret) (($# >= 2)) || die '--non-secret requires a name'; command_non_secret_parameters+=("$2"); shift 2; continue ;;
       --allow-type-change) command_allow_type_change=true; shift; continue ;;
       --release-file) (($# >= 2)) || die '--release-file requires DEST=PATH'; command_supplemental_files+=("$2"); shift 2; continue ;;
+      --consumer-ref) (($# >= 2)) || die '--consumer-ref requires a value'; command_consumer_ref="$2"; shift 2; continue ;;
+      --frontend-directory) key=frontend.directory ;;
+      --build-command) key=frontend.build_command ;;
+      --deploy-command) key=frontend.deploy_command ;;
+      --remove-command) key=frontend.remove_command ;;
+      --output-entrypoint) key=frontend.output_entrypoint ;;
+      --frontend-url) key=frontend.frontend_url ;;
+      --api-url) key=frontend.api_url ;;
+      --frontend-origin) key=frontend.frontend_origin ;;
+      --api-base-url) key=frontend.api_base_url ;;
+      --frontend-hostname) key=frontend.frontend_hostname ;;
+      --frontend-certificate-arn) key=frontend.frontend_certificate_arn ;;
+      --aws-role-secret) key=frontend.aws_role_secret ;;
+      --cors-path) (($# >= 2)) || die '--cors-path requires a value'; command_cors_path="$2"; shift 2; continue ;;
+      --websocket-path) (($# >= 2)) || die '--websocket-path requires a value'; command_websocket_path="$2"; shift 2; continue ;;
       --wait) command_wait=true; shift; continue ;;
       --availability-zone) key=aws.availability_zone ;;
       --route53-zone-name) key=aws.route53_zone_name ;;
@@ -329,6 +380,19 @@ validate_values() {
     die 'retain_data_volume must be true or false'
   [[ "${values[defaults.retain_eip]}" =~ ^(true|false)$ ]] ||
     die 'retain_eip must be true or false'
+  [[ "${values[frontend.directory]}" != /* && "${values[frontend.directory]}" != *'..'* ]] ||
+    die 'frontend.directory must be a relative path without ..'
+  [[ -n "${values[frontend.build_command]}" && -n "${values[frontend.deploy_command]}" ]] ||
+    die 'frontend build_command and deploy_command are required'
+  [[ -n "${values[frontend.remove_command]}" ]] || die 'frontend remove_command is required'
+  [[ -z "${values[frontend.output_entrypoint]}" || "${values[frontend.output_entrypoint]}" != /* ]] ||
+    die 'frontend.output_entrypoint must be relative'
+  for key in frontend.frontend_url frontend.api_url frontend.frontend_origin frontend.api_base_url; do
+    [[ -z "${values[$key]}" || "${values[$key]}" =~ ^https?://[^[:space:]]+$ ]] || die "$key must be an http(s) URL"
+  done
+  [[ -z "${values[frontend.frontend_hostname]}" || "${values[frontend.frontend_hostname]}" =~ ^[A-Za-z0-9.-]+$ ]] ||
+    die 'frontend.frontend_hostname is invalid'
+  [[ "${values[frontend.aws_role_secret]}" =~ ^[A-Z][A-Z0-9_]*$ ]] || die 'frontend.aws_role_secret must be an environment secret name'
 }
 
 show_config() {
@@ -399,6 +463,11 @@ require_onboarding_values() {
     backend.parameter_path backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
     [[ "${values[$key]}" != *'|'* ]] || die "$key cannot contain the template delimiter |"
   done
+  for key in frontend.directory frontend.build_command frontend.deploy_command frontend.remove_command \
+    frontend.output_entrypoint frontend.frontend_url frontend.api_url frontend.frontend_origin \
+    frontend.api_base_url frontend.frontend_hostname frontend.frontend_certificate_arn frontend.aws_role_secret; do
+    [[ "${values[$key]}" != *'|'* ]] || die "$key cannot contain the template delimiter |"
+  done
 }
 
 onboarding_tmp=''
@@ -439,11 +508,23 @@ render_workflow() {
   template="${template//__RELEASE_RETENTION_DAYS__/${values[defaults.release_retention_days]}}"
   template="${template//__ENABLE_BACKUPS__/${values[defaults.enable_data_volume_backups]}}"
   template="${template//__BACKUP_KMS_KEY_ARN__/${values[defaults.backup_kms_key_arn]}}"
+  template="${template//__FRONTEND_DIRECTORY__/${values[frontend.directory]}}"
+  template="${template//__FRONTEND_BUILD_COMMAND__/${values[frontend.build_command]}}"
+  template="${template//__FRONTEND_DEPLOY_COMMAND__/${values[frontend.deploy_command]}}"
+  template="${template//__FRONTEND_REMOVE_COMMAND__/${values[frontend.remove_command]}}"
+  template="${template//__FRONTEND_OUTPUT_ENTRYPOINT__/${values[frontend.output_entrypoint]}}"
+  template="${template//__FRONTEND_URL__/${values[frontend.frontend_url]}}"
+  template="${template//__API_URL__/${values[frontend.api_url]}}"
+  template="${template//__FRONTEND_ORIGIN__/${values[frontend.frontend_origin]}}"
+  template="${template//__API_BASE_URL__/${values[frontend.api_base_url]}}"
+  template="${template//__FRONTEND_HOSTNAME__/${values[frontend.frontend_hostname]}}"
+  template="${template//__FRONTEND_CERTIFICATE_ARN__/${values[frontend.frontend_certificate_arn]}}"
+  template="${template//__FRONTEND_ROLE_SECRET__/${values[frontend.aws_role_secret]}}"
   printf '%s' "$template"
 }
 
 prepare_onboarding_files() {
-  local config_content infra deploy rollback ami lifecycle parameters
+  local config_content infra deploy rollback ami lifecycle parameters frontend_deploy frontend_rollback frontend_lifecycle
   onboarding_tmp="$(mktemp -d "${TMPDIR:-/tmp}/poorman-aws-onboard.XXXXXX")"
   generated_targets=()
   generated_sources=()
@@ -474,6 +555,19 @@ defaults:
   backup_kms_key_arn: ${values[defaults.backup_kms_key_arn]}
   retain_data_volume: ${values[defaults.retain_data_volume]}
   retain_eip: ${values[defaults.retain_eip]}
+frontend:
+  directory: ${values[frontend.directory]}
+  build_command: ${values[frontend.build_command]}
+  deploy_command: ${values[frontend.deploy_command]}
+  remove_command: ${values[frontend.remove_command]}
+  output_entrypoint: ${values[frontend.output_entrypoint]}
+  frontend_url: ${values[frontend.frontend_url]}
+  api_url: ${values[frontend.api_url]}
+  frontend_origin: ${values[frontend.frontend_origin]}
+  api_base_url: ${values[frontend.api_base_url]}
+  frontend_hostname: ${values[frontend.frontend_hostname]}
+  frontend_certificate_arn: ${values[frontend.frontend_certificate_arn]}
+  aws_role_secret: ${values[frontend.aws_role_secret]}
 EOF
 )"
   if [[ "$config_explicit" == false ]]; then stage_onboarding_file .poorman-aws.yml "$config_content"; fi
@@ -729,12 +823,136 @@ jobs:
       environment_parameters: ${{ secrets.RUNTIME_PARAMETERS }}
 EOF
  )"
+  frontend_deploy="$(cat <<'EOF'
+name: poorman-aws frontend deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+permissions:
+  contents: read
+jobs:
+  deploy:
+    uses: __REPOSITORY__/.github/workflows/deploy-frontend.yml@__REF__
+    with:
+      infrastructure_repository: __REPOSITORY__
+      infrastructure_ref: __REF__
+      application_name: __APP__
+      environment: ${{ inputs.environment }}
+      aws_region: __REGION__
+      frontend_directory: __FRONTEND_DIRECTORY__
+      build_command: __FRONTEND_BUILD_COMMAND__
+      deploy_command: __FRONTEND_DEPLOY_COMMAND__
+      output_entrypoint: __FRONTEND_OUTPUT_ENTRYPOINT__
+      frontend_url: ${{ vars.FRONTEND_URL || '__FRONTEND_URL__' }}
+      api_url: ${{ vars.API_URL || '__API_URL__' }}
+      frontend_origin: ${{ vars.FRONTEND_ORIGIN || '__FRONTEND_ORIGIN__' }}
+      api_base_url: ${{ vars.API_BASE_URL || '__API_BASE_URL__' }}
+      frontend_certificate_arn: ${{ vars.FRONTEND_CERTIFICATE_ARN || '__FRONTEND_CERTIFICATE_ARN__' }}
+    secrets:
+      aws_role_arn: ${{ secrets.__FRONTEND_ROLE_SECRET__ }}
+EOF
+  )"
+  frontend_rollback="$(cat <<'EOF'
+name: poorman-aws frontend rollback
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      consumer_ref:
+        description: Immutable known-good consumer commit, tag, or branch
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  rollback:
+    uses: __REPOSITORY__/.github/workflows/rollback-frontend.yml@__REF__
+    with:
+      infrastructure_repository: __REPOSITORY__
+      infrastructure_ref: __REF__
+      consumer_ref: ${{ inputs.consumer_ref }}
+      application_name: __APP__
+      environment: ${{ inputs.environment }}
+      aws_region: __REGION__
+      frontend_directory: __FRONTEND_DIRECTORY__
+      build_command: __FRONTEND_BUILD_COMMAND__
+      deploy_command: __FRONTEND_DEPLOY_COMMAND__
+      output_entrypoint: __FRONTEND_OUTPUT_ENTRYPOINT__
+      frontend_url: ${{ vars.FRONTEND_URL || '__FRONTEND_URL__' }}
+      api_url: ${{ vars.API_URL || '__API_URL__' }}
+      frontend_origin: ${{ vars.FRONTEND_ORIGIN || '__FRONTEND_ORIGIN__' }}
+      api_base_url: ${{ vars.API_BASE_URL || '__API_BASE_URL__' }}
+      frontend_certificate_arn: ${{ vars.FRONTEND_CERTIFICATE_ARN || '__FRONTEND_CERTIFICATE_ARN__' }}
+    secrets:
+      aws_role_arn: ${{ secrets.__FRONTEND_ROLE_SECRET__ }}
+EOF
+  )"
+  frontend_lifecycle="$(cat <<'EOF'
+name: poorman-aws frontend lifecycle
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Guarded staging frontend lifecycle action
+        required: true
+        default: DESTROY
+        type: choice
+        options: [DESTROY, NUKE]
+      confirmation:
+        description: Must match ACTION-STAGING when applying
+        required: true
+        type: string
+      apply:
+        description: Execute the selected action
+        required: true
+        default: false
+        type: boolean
+      consumer_ref:
+        description: Immutable consumer ref containing the removal command
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  lifecycle:
+    uses: __REPOSITORY__/.github/workflows/kill-frontend-non-production.yml@__REF__
+    with:
+      infrastructure_repository: __REPOSITORY__
+      infrastructure_ref: __REF__
+      application_name: __APP__
+      environment: staging
+      action: ${{ inputs.action }}
+      confirmation: ${{ inputs.confirmation }}
+      apply: ${{ inputs.apply }}
+      aws_region: __REGION__
+      frontend_hostname: ${{ vars.FRONTEND_HOSTNAME || '__FRONTEND_HOSTNAME__' }}
+      frontend_directory: __FRONTEND_DIRECTORY__
+      frontend_remove_command: __FRONTEND_REMOVE_COMMAND__
+      consumer_ref: ${{ inputs.consumer_ref }}
+    secrets:
+      aws_role_arn: ${{ secrets.__FRONTEND_ROLE_SECRET__ }}
+EOF
+  )"
   stage_onboarding_file .github/workflows/poorman-aws-backend-infra.yml "$(render_workflow "$infra")"
   stage_onboarding_file .github/workflows/poorman-aws-backend-deploy.yml "$(render_workflow "$deploy")"
   stage_onboarding_file .github/workflows/poorman-aws-backend-rollback.yml "$(render_workflow "$rollback")"
   stage_onboarding_file .github/workflows/poorman-aws-backend-ami.yml "$(render_workflow "$ami")"
   stage_onboarding_file .github/workflows/poorman-aws-lifecycle.yml "$(render_workflow "$lifecycle")"
   stage_onboarding_file .github/workflows/poorman-aws-backend-parameters.yml "$(render_workflow "$parameters")"
+  if [[ -n "${values[frontend.frontend_url]}" || -n "${values[frontend.api_url]}" || -n "${values[frontend.frontend_hostname]}" ]]; then
+    stage_onboarding_file .github/workflows/poorman-aws-frontend-deploy.yml "$(render_workflow "$frontend_deploy")"
+    stage_onboarding_file .github/workflows/poorman-aws-frontend-rollback.yml "$(render_workflow "$frontend_rollback")"
+    stage_onboarding_file .github/workflows/poorman-aws-frontend-lifecycle.yml "$(render_workflow "$frontend_lifecycle")"
+  fi
 }
 
 write_onboarding_files() {
@@ -957,6 +1175,82 @@ lifecycle_adapter() {
     "action=$action" "confirmation=$command_confirm" "apply=$command_apply"
 }
 
+frontend_environment() {
+  local environment="${command_environment:-staging}"
+  [[ "$environment" =~ ^(staging|production)$ ]] || die '--environment must be staging or production'
+  printf '%s\n' "$environment"
+}
+
+require_frontend_contract() {
+  [[ -n "${values[frontend.directory]}" ]] || die 'frontend.directory is required'
+  [[ -n "${values[frontend.build_command]}" && -n "${values[frontend.deploy_command]}" ]] ||
+    die 'frontend build and deploy commands are required'
+  [[ -n "${values[frontend.aws_role_secret]}" ]] || die 'frontend.aws_role_secret is required'
+}
+
+require_consumer_ref() {
+  [[ -n "$command_consumer_ref" && "$command_consumer_ref" != main && "$command_consumer_ref" != master && "$command_consumer_ref" != *' '* ]] ||
+    die 'frontend rollback/lifecycle requires an immutable --consumer-ref'
+}
+
+frontend_deploy_adapter() {
+  local environment repo
+  environment="$(frontend_environment)"
+  require_immutable_ref
+  require_frontend_contract
+  require_mutation_confirmation "FRONTEND-DEPLOY-${environment^^}"
+  repo="$(consumer_repository)"
+  dispatch_workflow poorman-aws-frontend-deploy.yml "$repo" "environment=$environment"
+}
+
+frontend_rollback_adapter() {
+  local environment repo
+  environment="$(frontend_environment)"
+  require_immutable_ref
+  require_frontend_contract
+  require_consumer_ref
+  require_mutation_confirmation "FRONTEND-ROLLBACK-${environment^^}"
+  repo="$(consumer_repository)"
+  dispatch_workflow poorman-aws-frontend-rollback.yml "$repo" \
+    "environment=$environment" "consumer_ref=$command_consumer_ref"
+}
+
+frontend_lifecycle_adapter() {
+  local repo action
+  [[ "${command_environment:-staging}" == staging ]] || die 'frontend lifecycle is restricted to staging'
+  require_immutable_ref
+  require_frontend_contract
+  [[ -n "${values[frontend.frontend_hostname]}" ]] || die 'frontend.frontend_hostname is required'
+  action="${command_action:-${command_args[1]:-}}"
+  [[ "$action" =~ ^(DESTROY|NUKE)$ ]] || die 'frontend lifecycle requires --action DESTROY|NUKE'
+  require_consumer_ref
+  if [[ "$command_apply" == true ]]; then require_mutation_confirmation "FRONTEND-${action}-STAGING"; fi
+  repo="$(consumer_repository)"
+  dispatch_workflow poorman-aws-frontend-lifecycle.yml "$repo" \
+    "action=$action" "confirmation=$command_confirm" "apply=$command_apply" \
+    "consumer_ref=$command_consumer_ref"
+}
+
+frontend_smoke_adapter() {
+  local smoke_script
+  [[ -n "${values[frontend.frontend_url]}" ]] || die 'frontend.frontend_url is required'
+  [[ -n "${values[frontend.api_url]}" ]] || die 'frontend.api_url is required'
+  export FRONTEND_URL="${values[frontend.frontend_url]}"
+  export API_URL="${values[frontend.api_url]}"
+  export FRONTEND_ORIGIN="${values[frontend.frontend_origin]}"
+  [[ -n "$command_cors_path" ]] && export CORS_PATH="$command_cors_path"
+  [[ -n "$command_websocket_path" ]] && export WEBSOCKET_PATH="$command_websocket_path"
+  if [[ -n "$script_directory" && -x "$script_directory/frontend-live-smoke" ]]; then
+    smoke_script="$script_directory/frontend-live-smoke"
+    bash "$smoke_script"
+  else
+    require_immutable_ref
+    command -v curl >/dev/null 2>&1 || die 'curl is required for piped frontend smoke checks'
+    curl -fsSL "https://raw.githubusercontent.com/${values[infrastructure_repository]}/${values[infrastructure_ref]}/bin/frontend-live-smoke" |
+      bash
+  fi
+}
+
 operational_adapter() {
   case "$command_name" in
     parameters) parameters_adapter ;;
@@ -964,6 +1258,14 @@ operational_adapter() {
     release) release_adapter ;;
     rollback) rollback_adapter ;;
     lifecycle) lifecycle_adapter ;;
+    frontend)
+      case "${command_args[0]:-}" in
+        deploy) frontend_deploy_adapter ;;
+        rollback) frontend_rollback_adapter ;;
+        lifecycle) frontend_lifecycle_adapter ;;
+        smoke) frontend_smoke_adapter ;;
+        *) die 'usage: frontend deploy|rollback|lifecycle|smoke' ;;
+      esac ;;
     ami)
       [[ "${command_args[0]:-build}" == build ]] || die 'usage: ami build'
       ami_adapter ;;
@@ -1155,7 +1457,7 @@ main() {
       esac ;;
     doctor) doctor ;;
     onboard) onboard ;;
-    parameters|ami|plan|apply|release|rollback|lifecycle)
+    parameters|ami|plan|apply|release|rollback|lifecycle|frontend)
       operational_adapter ;;
     help) usage ;;
     *) die "unknown command: $command_name" ;;

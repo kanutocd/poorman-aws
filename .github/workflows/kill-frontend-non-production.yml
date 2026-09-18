@@ -106,6 +106,7 @@ jobs:
 
       - name: Apply frontend lifecycle guard
         env:
+          ENVIRONMENT: ${{ inputs.environment }}
           FRONTEND_LIFECYCLE_ACTION: ${{ inputs.action }}
           FRONTEND_LIFECYCLE_CONFIRMATION: ${{ inputs.confirmation }}
           FRONTEND_LIFECYCLE_APPLY: ${{ inputs.apply }}
