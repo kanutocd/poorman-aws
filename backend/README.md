@@ -72,6 +72,11 @@ claiming a recovery objective. Production uses a 24-hour recovery point
 objective and a 4-hour recovery time objective. Production backup coverage
 cannot be disabled through OpenTofu.
 
+The recovery and quarterly restore-rehearsal procedure is documented in
+[`docs/recovery.md`](../docs/recovery.md). It covers the production retained
+data volume, Docker/Caddy state, immutable release artifacts, and explicit
+release rollback.
+
 The production retained data volume is always protected from OpenTofu
 destruction. Removing or nuking it is an emergency out-of-band AWS CLI or
 console operation and is intentionally outside this project's lifecycle
@@ -98,9 +103,9 @@ must not be individually exposed by the consumer's Compose file. Caddy owns
 public ports `80` and `443`, obtains the API certificate through ACME/Let's
 Encrypt, and persists its certificate state in the environment's Compose
 volume. That named volume survives Compose container and release restarts, but
-currently resides on the root EBS volume. It is not automatically restored
-onto a replacement host; use durable backups or the retained data EBS volume
-if that state becomes important.
+resides beneath the Docker data root on the separate data EBS volume. It is
+restored with that durable recovery boundary when the backup procedure is
+followed.
 
 ## Prerequisites
 

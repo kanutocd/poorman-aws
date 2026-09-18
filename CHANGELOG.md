@@ -44,6 +44,12 @@ All notable changes to this project are documented in this file.
 - Added a 30-day default expiration for current immutable release objects;
   noncurrent versions continue to expire after 30 days and incomplete
   multipart uploads after one day.
+- Added a production recovery runbook covering the 24-hour RPO, 4-hour RTO,
+  retained data-volume restore, Docker/Caddy state coverage, release rollback,
+  and quarterly restore rehearsals.
+- Added plan-only artifact lifecycle assertions for the 30-day current and
+  noncurrent release retention windows, and clarified that Docker/Caddy state
+  is recovered from the durable data EBS volume.
 - Changed runtime parameter provisioning to use `SecureString` by default;
   non-secret values now require an explicit repeated `--non-secret NAME`
   declaration.
