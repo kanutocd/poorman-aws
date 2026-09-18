@@ -10,7 +10,8 @@ All notable changes to this project are documented in this file.
   cost-conscious single-host deployment model.
 - Added production-only AWS Backup coverage for the retained data EBS volume,
   with daily snapshots retained for 7 days, weekly snapshots retained for 28
-  days, and optional customer-managed KMS encryption.
+  days, optional customer-managed KMS encryption, a 24-hour RPO, and a
+  4-hour RTO.
 - Added an offline policy contract test covering production destruction
   protection, EC2 action boundaries, Route 53 scoping, release retention,
   backup configuration, and secure runtime-parameter defaults.
@@ -38,6 +39,8 @@ All notable changes to this project are documented in this file.
   values.
 - Added a production-only OpenTofu destroy sentinel so ordinary production
   destroy plans fail closed before resource mutation.
+- Made production data-volume backups mandatory in OpenTofu; emergency volume
+  removal remains an out-of-band AWS CLI/console operation.
 - Added a 30-day default expiration for current immutable release objects;
   noncurrent versions continue to expire after 30 days and incomplete
   multipart uploads after one day.

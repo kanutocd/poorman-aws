@@ -68,7 +68,16 @@ Production enables AWS Backup by default: daily snapshots are retained for 7
 days and weekly snapshots for 28 days. Set `backup_kms_key_arn` to use an
 approved customer-managed key; otherwise the AWS Backup vault uses its default
 AWS Backup encryption. Backup restore rehearsals remain required before
-claiming a recovery objective.
+claiming a recovery objective. Production uses a 24-hour recovery point
+objective and a 4-hour recovery time objective. Production backup coverage
+cannot be disabled through OpenTofu.
+
+The production retained data volume is always protected from OpenTofu
+destruction. Removing or nuking it is an emergency out-of-band AWS CLI or
+console operation and is intentionally outside this project's lifecycle
+commands. The `retain_data_volume` input remains available for future
+non-production environments that need durable data volumes, but backups and
+restore rehearsals are production-only in the current design.
 
 Verify the allocation after planning or applying with:
 

@@ -114,9 +114,14 @@ variable "release_retention_days" {
 }
 
 variable "enable_data_volume_backups" {
-  description = "Enable the approved production EBS backup plan for the retained data volume."
+  description = "Enable the approved production EBS backup plan; production cannot disable it."
   type        = bool
   default     = true
+
+  validation {
+    condition     = var.environment != "production" || var.enable_data_volume_backups
+    error_message = "Production must keep data-volume backups enabled."
+  }
 }
 
 variable "backup_kms_key_arn" {
