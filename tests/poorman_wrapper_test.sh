@@ -91,4 +91,48 @@ if "$wrapper" plan >/dev/null 2>&1; then
   exit 1
 fi
 
+mkdir -p "$temporary_dir/onboard/backend"
+touch "$temporary_dir/onboard/backend/compose.production.yaml"
+touch "$temporary_dir/onboard/backend/Caddyfile"
+touch "$temporary_dir/onboard/backend/Dockerfile"
+(
+  cd "$temporary_dir/onboard"
+  "$wrapper" --non-interactive onboard \
+    --application-name onboard-app \
+    --infrastructure-ref v1.5.4 \
+    --state-bucket onboard-state \
+    --aws-region us-east-2
+  "$wrapper" --non-interactive onboard \
+    --application-name onboard-app \
+    --infrastructure-ref v1.5.4 \
+    --state-bucket onboard-state \
+    --aws-region us-east-2 >/dev/null
+  grep -Fq 'uses: kanutocd/poorman-aws/.github/workflows/deploy-backend.yml@v1.5.4' \
+    .github/workflows/poorman-aws-backend-deploy.yml
+  grep -Fq 'state_bucket: onboard-state' .poorman-aws.yml
+  ! grep -R -Eq '(^|/)(infra|scripts)/|\.tf$|AWS_SECRET|API_KEY=' .github .poorman-aws.yml
+  printf '\n# consumer-owned change\n' >> .github/workflows/poorman-aws-backend-deploy.yml
+  if "$wrapper" --non-interactive onboard \
+    --application-name onboard-app \
+    --infrastructure-ref v1.5.4 \
+    --state-bucket onboard-state \
+    --aws-region us-east-2 >/dev/null 2>&1; then
+    echo 'conflicting generated workflow was overwritten without --overwrite' >&2
+    exit 1
+  fi
+  grep -Fq '# consumer-owned change' .github/workflows/poorman-aws-backend-deploy.yml
+)
+
+mkdir -p "$temporary_dir/interactive/backend"
+touch "$temporary_dir/interactive/backend/compose.production.yaml"
+touch "$temporary_dir/interactive/backend/Caddyfile"
+touch "$temporary_dir/interactive/backend/Dockerfile"
+(
+  cd "$temporary_dir/interactive"
+  printf 'interactive-app\nv1.5.4\ninteractive-state\ny\n' |
+    "$wrapper" onboard >/dev/null
+  grep -Fq 'application_name: interactive-app' .poorman-aws.yml
+  grep -Fq 'state_bucket: interactive-state' .poorman-aws.yml
+)
+
 echo 'poorman-aws wrapper checks passed'

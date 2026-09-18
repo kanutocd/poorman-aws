@@ -206,15 +206,18 @@ pass secret values through `with` inputs.
 
 ## Consumer wrapper
 
-The Phase 0 wrapper provides a common contract for cloned and remote
-consumption. It currently validates configuration and prerequisites; later
-phases connect the operational commands.
+The consumer wrapper provides a common contract for cloned and remote
+consumption. It validates prerequisites and can onboard a consumer by writing
+only non-secret configuration plus thin caller workflows; the reusable
+workflows, OpenTofu modules, and operational scripts remain owned by
+`poorman-aws`.
 
 From a clone:
 
 ```bash
 ./bin/poorman-aws doctor
 ./bin/poorman-aws config validate --config .poorman-aws.yml
+./bin/poorman-aws onboard
 ```
 
 Use `doctor --offline` for local-only checks. Add `--aws`, `--docker`,
@@ -237,6 +240,24 @@ curl -fsSL \
   https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v1.5.4/bin/poorman-aws \
   | bash -s -- doctor
 ```
+
+Onboarding can be run from a pinned release in the same way. Use
+`--non-interactive` with required values supplied by CLI options or an explicit
+`--config`; command-line values always override YAML values:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v1.5.4/bin/poorman-aws \
+  | bash -s -- --non-interactive onboard \
+      --application-name my-app \
+      --infrastructure-ref v1.5.4 \
+      --state-bucket my-app-tofu-state
+```
+
+Onboarding is idempotent when generated files are unchanged. Differing
+consumer-owned files cause a conflict and are never overwritten unless
+`--overwrite` is explicitly supplied after review. `--dry-run` previews the
+files without writing them.
 
 The wrapper discovers `.poorman-aws.yml` or `.poorman-aws.yaml`, or accepts an
 explicit `--config PATH`. Precedence is built-in defaults, discovered or

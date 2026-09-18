@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 ### Consumer wrapper
 
+- Added Phase 2 onboarding with interactive confirmation, non-interactive
+  required-value enforcement, consumer path detection, and useful defaults.
+- Added generation of non-secret `.poorman-aws.yml` configuration and thin
+  reusable-workflow callers for backend infrastructure, deployment, rollback,
+  and AMI workflows. Generated integration is self-contained and never copies
+  OpenTofu modules or infrastructure scripts into the consumer repository.
+- Added idempotent generation, explicit conflict detection, `--overwrite`,
+  `--dry-run`, and fixture coverage for repeated onboarding, protected local
+  edits, non-secret output, and interactive prompts.
 - Expanded `poorman-aws doctor` with non-mutating prerequisite checks,
   selectable AWS/GitHub/Docker/OpenTofu/Packer checks, consumer file
   inspection, actionable remediation hints, and offline mode. The inspection

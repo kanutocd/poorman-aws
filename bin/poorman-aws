@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Self-contained Phase 0 consumer entry point. It is intentionally safe:
+# Self-contained consumer entry point. It is intentionally safe:
 # operational commands are reserved until their adapters are implemented.
 
 declare -A values sources cli_values
@@ -10,6 +10,7 @@ config_explicit=false
 json_output=false
 non_interactive=false
 dry_run=false
+overwrite=false
 offline=false
 check_aws=false
 check_docker=false
@@ -27,7 +28,7 @@ Commands:
   config validate       Validate effective configuration.
   config show           Show effective redacted configuration.
   doctor                Check prerequisites and the consumer repository contract.
-  onboard               Validate configuration and show effective values.
+  onboard               Generate consumer config and thin caller workflows.
   parameters|ami build  Reserved for later operational adapters.
   plan|apply             Reserved for later infrastructure adapters.
   release|rollback      Reserved for later release adapters.
@@ -38,6 +39,7 @@ Global options:
   --non-interactive     Refuse prompts.
   --json                Emit machine-readable output where supported.
   --dry-run             Never mutate files or call mutating operations.
+  --overwrite           Allow replacing generated files after conflict checks.
   --offline             Skip AWS and GitHub checks.
   --aws                 Check AWS CLI identity and configured region.
   --docker              Check Docker Compose and the consumer Compose file.
@@ -195,6 +197,7 @@ parse_args() {
       --non-interactive) non_interactive=true; shift; continue ;;
       --json) json_output=true; shift; continue ;;
       --dry-run) dry_run=true; shift; continue ;;
+      --overwrite) overwrite=true; shift; continue ;;
       --offline) offline=true; shift; continue ;;
       --aws) check_aws=true; shift; continue ;;
       --docker) check_docker=true; shift; continue ;;
@@ -261,6 +264,309 @@ show_config() {
       printf '%-36s %s (source: %s)\n' "$key" "${values[$key]}" "${sources[$key]}"
     done < <(printf '%s\n' "${!values[@]}" | sort)
   fi
+}
+
+prompt_value() {
+  local key="$1" label="$2" required="${3:-false}" current="${values[$1]-}" answer
+  if [[ -n "$current" && ( "${sources[$key]-}" != default || "$required" != true ) ]]; then
+    return
+  fi
+  if [[ "$non_interactive" == true ]]; then
+    die "$key is required in --non-interactive mode; set it in --config or on the command line"
+  fi
+  printf '%s [%s]: ' "$label" "$current" >&2
+  IFS= read -r answer
+  [[ -n "$answer" ]] && set_value "$key" "$answer" prompt
+}
+
+detect_onboarding_paths() {
+  local candidate
+  if [[ "${sources[backend.compose_file]-}" == default ]]; then
+    for candidate in deployment/backend/compose.production.yaml backend/compose.production.yaml compose.yaml; do
+      if [[ -f "$PWD/$candidate" ]]; then set_value backend.compose_file "$candidate" detected; break; fi
+    done
+  fi
+  if [[ "${sources[backend.caddy_file]-}" == default ]]; then
+    for candidate in deployment/backend/Caddyfile backend/Caddyfile Caddyfile; do
+      if [[ -f "$PWD/$candidate" ]]; then set_value backend.caddy_file "$candidate" detected; break; fi
+    done
+  fi
+  if [[ "${sources[backend.dockerfile]-}" == default ]]; then
+    for candidate in backend/Dockerfile Dockerfile; do
+      if [[ -f "$PWD/$candidate" ]]; then set_value backend.dockerfile "$candidate" detected; break; fi
+    done
+  fi
+}
+
+require_onboarding_values() {
+  detect_onboarding_paths
+  prompt_value application_name 'Application name' true
+  prompt_value infrastructure_repository 'Infrastructure repository'
+  prompt_value infrastructure_ref 'Immutable infrastructure ref (tag or commit SHA)' true
+  prompt_value aws.region 'AWS region'
+  prompt_value aws.state_bucket 'Encrypted remote state bucket' true
+  prompt_value backend.parameter_path 'SSM parameter path'
+  prompt_value backend.compose_file 'Consumer Compose file'
+  prompt_value backend.caddy_file 'Consumer Caddyfile'
+  prompt_value backend.build_context 'Docker build context'
+  prompt_value backend.dockerfile 'Application Dockerfile'
+  validate_values
+  [[ "${values[infrastructure_ref]}" != main && "${values[infrastructure_ref]}" != master ]] ||
+    die 'onboarding requires an immutable infrastructure ref; use a release tag or commit SHA'
+  local key
+  for key in application_name infrastructure_repository infrastructure_ref aws.region aws.state_bucket \
+    backend.parameter_path backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
+    [[ "${values[$key]}" != *'|'* ]] || die "$key cannot contain the template delimiter |"
+  done
+}
+
+onboarding_tmp=''
+onboard_cleanup() {
+  [[ -z "$onboarding_tmp" ]] || rm -rf "$onboarding_tmp"
+}
+
+stage_onboarding_file() {
+  local target="$1" content="$2" staged
+  staged="$onboarding_tmp/$(printf '%s' "$target" | tr '/' '_')"
+  mkdir -p "$(dirname "$staged")"
+  printf '%s\n' "$content" >"$staged"
+  generated_targets+=("$target")
+  generated_sources+=("$staged")
+}
+
+render_workflow() {
+  local template="$1"
+  template="${template//__REPOSITORY__/${values[infrastructure_repository]}}"
+  template="${template//__REF__/${values[infrastructure_ref]}}"
+  template="${template//__APP__/${values[application_name]}}"
+  template="${template//__REGION__/${values[aws.region]}}"
+  template="${template//__STATE_BUCKET__/${values[aws.state_bucket]}}"
+  template="${template//__PARAMETER_PATH__/${values[backend.parameter_path]}}"
+  template="${template//__COMPOSE__/${values[backend.compose_file]}}"
+  template="${template//__CADDY__/${values[backend.caddy_file]}}"
+  template="${template//__CONTEXT__/${values[backend.build_context]}}"
+  template="${template//__DOCKERFILE__/${values[backend.dockerfile]}}"
+  printf '%s' "$template"
+}
+
+prepare_onboarding_files() {
+  local config_content infra deploy rollback ami
+  onboarding_tmp="$(mktemp -d "${TMPDIR:-/tmp}/poorman-aws-onboard.XXXXXX")"
+  generated_targets=()
+  generated_sources=()
+  config_content="$(cat <<EOF
+version: 1
+application_name: ${values[application_name]}
+infrastructure_repository: ${values[infrastructure_repository]}
+infrastructure_ref: ${values[infrastructure_ref]}
+aws:
+  region: ${values[aws.region]}
+  state_bucket: ${values[aws.state_bucket]}
+backend:
+  parameter_path: ${values[backend.parameter_path]}
+  compose_file: ${values[backend.compose_file]}
+  caddy_file: ${values[backend.caddy_file]}
+  build_context: ${values[backend.build_context]}
+  dockerfile: ${values[backend.dockerfile]}
+defaults:
+  instance_type: ${values[defaults.instance_type]}
+  root_volume_size_gib: ${values[defaults.root_volume_size_gib]}
+  data_volume_size_gib: ${values[defaults.data_volume_size_gib]}
+EOF
+)"
+  if [[ "$config_explicit" == false ]]; then stage_onboarding_file .poorman-aws.yml "$config_content"; fi
+
+  infra="$(cat <<'EOF'
+name: poorman-aws backend infrastructure
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      apply:
+        description: Apply infrastructure changes
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  infrastructure:
+    uses: __REPOSITORY__/.github/workflows/deploy-backend-infra.yml@__REF__
+    with:
+      infrastructure_repository: __REPOSITORY__
+      infrastructure_ref: __REF__
+      application_name: __APP__
+      environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'staging' }}
+      apply: ${{ github.event_name == 'workflow_dispatch' && inputs.apply || false }}
+      aws_region: __REGION__
+      state_bucket: __STATE_BUCKET__
+      availability_zone: ${{ vars.AVAILABILITY_ZONE }}
+      instance_type: ${{ vars.INSTANCE_TYPE || 't4g.micro' }}
+      root_volume_size_gib: ${{ vars.ROOT_VOLUME_SIZE_GIB || 10 }}
+      data_volume_size_gib: ${{ vars.DATA_VOLUME_SIZE_GIB || 20 }}
+      ssm_parameter_path: __PARAMETER_PATH__
+      ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN }}
+      route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME }}
+      route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
+      tags_json: '{}'
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
+      ami_id: ${{ secrets.AMI_ID }}
+EOF
+)"
+  deploy="$(cat <<'EOF'
+name: poorman-aws backend deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+permissions:
+  contents: read
+jobs:
+  deploy:
+    uses: __REPOSITORY__/.github/workflows/deploy-backend.yml@__REF__
+    with:
+      infrastructure_repository: __REPOSITORY__
+      infrastructure_ref: __REF__
+      application_name: __APP__
+      environment: ${{ inputs.environment }}
+      aws_region: __REGION__
+      state_bucket: __STATE_BUCKET__
+      api_url: ${{ vars.API_URL }}
+      compose_file: __COMPOSE__
+      caddy_file: __CADDY__
+      build_context: __CONTEXT__
+      dockerfile: __DOCKERFILE__
+      frontend_url: ${{ vars.FRONTEND_URL }}
+      frontend_origin: ${{ vars.FRONTEND_ORIGIN }}
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
+      application_api_token: ${{ secrets.APPLICATION_API_TOKEN }}
+EOF
+)"
+  rollback="$(cat <<'EOF'
+name: poorman-aws backend rollback
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      release_id:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  rollback:
+    uses: __REPOSITORY__/.github/workflows/rollback-backend.yml@__REF__
+    with:
+      infrastructure_repository: __REPOSITORY__
+      infrastructure_ref: __REF__
+      consumer_ref: ${{ github.sha }}
+      application_name: __APP__
+      environment: ${{ inputs.environment }}
+      aws_region: __REGION__
+      state_bucket: __STATE_BUCKET__
+      release_id: ${{ inputs.release_id }}
+      api_url: ${{ vars.API_URL }}
+      compose_file: __COMPOSE__
+      caddy_file: __CADDY__
+      frontend_url: ${{ vars.FRONTEND_URL }}
+      frontend_origin: ${{ vars.FRONTEND_ORIGIN }}
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
+      application_api_token: ${{ secrets.APPLICATION_API_TOKEN }}
+EOF
+)"
+  ami="$(cat <<'EOF'
+name: poorman-aws backend AMI
+on:
+  workflow_dispatch:
+    inputs:
+      subnet_id:
+        required: true
+        type: string
+      ssh_cidr:
+        required: true
+        type: string
+      ami_name_prefix:
+        required: true
+        default: __APP__-backend
+        type: string
+permissions:
+  contents: read
+jobs:
+  ami:
+    uses: __REPOSITORY__/.github/workflows/build-backend-ami.yml@__REF__
+    with:
+      infrastructure_repository: __REPOSITORY__
+      infrastructure_ref: __REF__
+      application_name: __APP__
+      aws_region: __REGION__
+      subnet_id: ${{ inputs.subnet_id }}
+      ssh_cidr: ${{ inputs.ssh_cidr }}
+      ami_name_prefix: ${{ inputs.ami_name_prefix }}
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
+EOF
+)"
+  stage_onboarding_file .github/workflows/poorman-aws-backend-infra.yml "$(render_workflow "$infra")"
+  stage_onboarding_file .github/workflows/poorman-aws-backend-deploy.yml "$(render_workflow "$deploy")"
+  stage_onboarding_file .github/workflows/poorman-aws-backend-rollback.yml "$(render_workflow "$rollback")"
+  stage_onboarding_file .github/workflows/poorman-aws-backend-ami.yml "$(render_workflow "$ami")"
+}
+
+write_onboarding_files() {
+  local index target source conflict=false
+  for index in "${!generated_targets[@]}"; do
+    target="${generated_targets[$index]}"
+    source="${generated_sources[$index]}"
+    if [[ -e "$target" ]] && ! cmp -s "$source" "$target"; then
+      if [[ "$overwrite" != true ]]; then
+        echo "conflict: $target already exists and differs; rerun with --overwrite after reviewing it" >&2
+        conflict=true
+      fi
+    fi
+  done
+  [[ "$conflict" == false ]] || { onboard_cleanup; exit 2; }
+  for index in "${!generated_targets[@]}"; do
+    target="${generated_targets[$index]}"
+    source="${generated_sources[$index]}"
+    if [[ "$dry_run" == true ]]; then
+      echo "would generate $target"
+    elif [[ -e "$target" ]] && cmp -s "$source" "$target"; then
+      echo "unchanged $target"
+    else
+      mkdir -p "$(dirname "$target")"
+      cp "$source" "$target"
+      echo "generated $target"
+    fi
+  done
+  onboard_cleanup
+}
+
+onboard() {
+  require_onboarding_values
+  if [[ "$non_interactive" == false ]]; then
+    printf 'Generate consumer integration files for %s? [y/N]: ' "${values[application_name]}" >&2
+    local confirmation
+    IFS= read -r confirmation
+    [[ "$confirmation" =~ ^[Yy]$ ]] || { echo 'onboarding cancelled'; return 0; }
+  fi
+  prepare_onboarding_files
+  write_onboarding_files
 }
 
 doctor_failure=0
@@ -432,6 +738,7 @@ reserved_command() {
 
 main() {
   parse_args "$@"
+  # no-op that evaluates variables without executing them as commands to silence shellcheck's warnings
   : "$non_interactive" "$dry_run"
   load_defaults
   load_config
@@ -445,7 +752,7 @@ main() {
         *) die 'usage: config validate|show' ;;
       esac ;;
     doctor) doctor ;;
-    onboard) show_config ;;
+    onboard) onboard ;;
     parameters|ami|plan|apply|release|rollback|lifecycle)
       reserved_command "$command_name ${command_args[*]:-}" ;;
     help) usage ;;
