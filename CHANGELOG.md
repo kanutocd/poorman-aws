@@ -62,6 +62,11 @@ All notable changes to this project are documented in this file.
 - Added `--policy-output-dir` dry-run support for inspecting generated
   deployment IAM policy JSON, with offline parsing tests synchronized between
   local `bin/quality` and GitHub Actions.
+- Hardened runtime parameter handling with secure-by-default SSM types,
+  explicit non-secret declarations, duplicate/empty/multiline input rejection,
+  and deliberate opt-in for existing parameter type changes.
+- Added protected runtime-secret rendering with mode `0600`, robust multiline
+  rejection, and tests ensuring secret values do not appear in command output.
 - Extended local and CI quality coverage to include the compute module,
   policy-contract checks, and ShellCheck/Bash checks for repository test
   scripts.

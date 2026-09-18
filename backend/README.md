@@ -419,6 +419,10 @@ The env file must contain the approved runtime variable names. Provider keys
 and runtime values are written as `SecureString` by default. Explicitly pass
 `--non-secret NAME` to classify a documented hostname, origin, image name,
 model, or other non-secret setting as a `String` parameter.
+Duplicate names, empty values, multiline values, and undeclared `--non-secret`
+names are rejected. Existing SSM parameter types are not changed implicitly;
+use `--allow-type-change` only after reviewing the existing parameter and
+approving an intentional migration.
 
 For an anonymous deployment, remove any previously configured API token instead
 of placing an empty value in SSM Parameter Store:
