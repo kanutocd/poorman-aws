@@ -16,8 +16,9 @@ author's local context.
    tools are installed.
 
 Use fenced `mermaid` blocks for diagrams. The site configuration maps these
-fences to Zensical's Mermaid integration, so do not paste generated SVG or add
-a page-specific Mermaid script.
+fences to Zensical's Mermaid integration and adds pan/zoom controls, so do not
+paste generated SVG or add a page-specific Mermaid script. Use the diagram
+toolbar for zoom, reset, pan, and fullscreen inspection.
 
 The build output is generated in `site/` and must not be committed. Keep
 implementation plans and local harness notes under ignored paths; they are not
