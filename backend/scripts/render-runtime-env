@@ -3,6 +3,9 @@ set -euo pipefail
 
 parameter_path="${1:?usage: render-runtime-env PARAMETER_PATH OUTPUT_PATH}"
 output_path="${2:?usage: render-runtime-env PARAMETER_PATH OUTPUT_PATH}"
+
+umask 077
+mkdir -p "$(dirname "$output_path")"
 temporary_path="$(mktemp "${output_path}.XXXXXX")"
 
 cleanup() {
@@ -10,16 +13,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-umask 077
-mkdir -p "$(dirname "$output_path")"
-
 aws ssm get-parameters-by-path \
   --path "$parameter_path" \
   --recursive \
   --with-decryption \
   --output json \
-  | jq -r '.Parameters[] | [.Name, .Value] | @tsv' \
-  | while IFS=$'\t' read -r parameter_name parameter_value; do
+  | jq -r '.Parameters[] | [.Name, .Value] | @base64' \
+  | while IFS= read -r encoded_parameter; do
+      decoded_parameter="$(printf '%s' "$encoded_parameter" | base64 --decode)"
+      parameter_name="$(jq -r '.[0]' <<<"$decoded_parameter")"
+      parameter_value="$(jq -r '.[1]' <<<"$decoded_parameter")"
       variable_name="${parameter_name##*/}"
 
       if [[ ! "$variable_name" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
