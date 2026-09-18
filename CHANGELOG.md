@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Documentation
+
+- Added a public MkDocs-compatible documentation site with task-oriented
+  onboarding, deployment, security, cost, recovery, and contribution guidance.
+- Added a complete reusable-workflow reference covering backend infrastructure,
+  backend releases and rollbacks, frontend delivery and lifecycle, AMI builds,
+  runtime parameters, and GitHub environment synchronization.
+- Documented the two supported wrapper consumption modes: invoking a cloned
+  `bin/poorman-aws` checkout and piping a pinned raw wrapper release to Bash.
+- Added a shared `bin/docs` build, serve, and clean entry point with pinned
+  documentation dependencies, Vale, Markdownlint, and offline Lychee checks.
+- Updated the GitHub Pages workflow to use the shared strict build, cached
+  Python setup, immutable action references, and a separate least-privilege
+  Pages deployment job.
+
 ### Frontend lifecycle
 
 - Added the generic `bin/frontend-lifecycle` guard for non-production
