@@ -56,6 +56,12 @@ All notable changes to this project are documented in this file.
 - Threaded the environment safety contract through networking, compute,
   deployment-artifact, and DNS/TLS module boundaries, with staging fixtures
   updated for the new required module input.
+- Expanded compute plan-only coverage for retained and disposable data-volume
+  selection, attachment to the current instance, EBS encryption, root-volume
+  deletion, IMDSv2 requirements, and production retention preconditions.
+- Added `--policy-output-dir` dry-run support for inspecting generated
+  deployment IAM policy JSON, with offline parsing tests synchronized between
+  local `bin/quality` and GitHub Actions.
 - Extended local and CI quality coverage to include the compute module,
   policy-contract checks, and ShellCheck/Bash checks for repository test
   scripts.
