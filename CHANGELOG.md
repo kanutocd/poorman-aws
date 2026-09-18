@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 ### Consumer wrapper
 
+- Documented `v0.1.0` as the baseline release reference and full commit SHAs
+  as the required dogfooding/testing reference.
+- Hardened every reusable workflow and environment synchronizer against
+  floating `main`/`master` refs; infrastructure refs are required and
+  production/lifecycle dispatches fail closed on floating refs.
+- Onboarding now renders a unified diff of generated files before interactive
+  confirmation, while preserving idempotency and conflict protection.
 - Added reproducible versioned wrapper packaging with SHA-256 checksums,
   release notes, a tag-triggered GitHub release workflow, and cloned-versus-
   piped execution parity tests.

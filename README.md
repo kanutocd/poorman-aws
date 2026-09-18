@@ -237,7 +237,7 @@ From an immutable release reference:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v1.5.4/bin/poorman-aws \
+  https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v0.1.0/bin/poorman-aws \
   | bash -s -- doctor
 ```
 
@@ -247,10 +247,10 @@ Onboarding can be run from a pinned release in the same way. Use
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v1.5.4/bin/poorman-aws \
+  https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v0.1.0/bin/poorman-aws \
   | bash -s -- --non-interactive onboard \
       --application-name my-app \
-      --infrastructure-ref v1.5.4 \
+      --infrastructure-ref v0.1.0 \
       --state-bucket my-app-tofu-state
 ```
 
@@ -294,7 +294,7 @@ For production, prefer downloading and reviewing the versioned wrapper artifact
 before executing it:
 
 ```bash
-release=v1.5.4
+release=v0.1.0
 base="https://github.com/kanutocd/poorman-aws/releases/download/$release"
 curl -fL -o "poorman-aws-$release" "$base/poorman-aws-$release"
 curl -fL -o "poorman-aws-$release.sha256" "$base/poorman-aws-$release.sha256"
@@ -364,7 +364,8 @@ jobs:
 The consumer remains responsible for exposing the caller trigger, selecting
 the correct protected environment, and providing environment-specific secret
 mappings. The reusable workflow never receives secrets through normal `with`
-inputs.
+inputs. All reusable infrastructure/source refs are required explicitly;
+production and lifecycle workflows reject `main` and `master`.
 
 ## Versioning reusable workflows
 
@@ -390,6 +391,8 @@ Use the following policy when publishing and consuming releases:
 - Consumers should pin an exact release tag in production and upgrade it
   deliberately after reviewing the changelog. Do not use `main`, a mutable
   floating tag, or an unreviewed commit for production deployment.
+- During dogfooding or pre-release testing, use the full tested commit SHA in
+  both the reusable-workflow `uses` ref and the `infrastructure_ref` input.
 - Maintainers may provide a moving major compatibility tag such as `v1` only
   when its update process is documented and protected; an exact release tag
   remains the safer default for infrastructure.
