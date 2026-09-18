@@ -204,6 +204,36 @@ pass secret values through `with` inputs.
 
 ## Reusable workflows
 
+## Consumer wrapper
+
+The Phase 0 wrapper provides a common contract for cloned and remote
+consumption. It currently validates configuration and prerequisites; later
+phases connect the operational commands.
+
+From a clone:
+
+```bash
+./bin/poorman-aws doctor
+./bin/poorman-aws config validate --config .poorman-aws.yml
+```
+
+From an immutable release reference:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v1.5.4/bin/poorman-aws \
+  | bash -s -- doctor
+```
+
+The wrapper discovers `.poorman-aws.yml` or `.poorman-aws.yaml`, or accepts an
+explicit `--config PATH`. Precedence is built-in defaults, discovered or
+explicit YAML, then command-line options. Configuration is restricted to
+non-secret consumer and infrastructure settings; secrets must come from
+protected environments or runtime credentials. Production usage should pin a
+release and verify its checksum instead of piping a floating branch to Bash.
+
+## Reusable workflows
+
 The repository publishes these consumer-facing `workflow_call` entry points:
 
 - `.github/workflows/build-backend-ami.yml`

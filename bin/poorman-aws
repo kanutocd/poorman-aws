@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Self-contained Phase 0 consumer entry point. It is intentionally safe:
+# operational commands are reserved until their adapters are implemented.
+
+declare -A values sources cli_values
+config_path=''
+config_explicit=false
+json_output=false
+non_interactive=false
+dry_run=false
+command_name=''
+command_args=()
+
+usage() {
+  cat <<'EOF'
+Usage: poorman-aws [global options] COMMAND [command options]
+
+Commands:
+  config validate       Validate effective configuration.
+  config show           Show effective redacted configuration.
+  doctor                Check Phase 0 prerequisites and repository layout.
+  onboard               Validate configuration and show effective values.
+  parameters|ami build  Reserved for later operational adapters.
+  plan|apply             Reserved for later infrastructure adapters.
+  release|rollback      Reserved for later release adapters.
+  lifecycle              Reserved for later lifecycle adapter.
+
+Global options:
+  --config PATH         Explicit YAML configuration file.
+  --non-interactive     Refuse prompts.
+  --json                Emit machine-readable output where supported.
+  --dry-run             Never mutate files or call mutating operations.
+  --help, --version
+
+Precedence: built-in defaults < YAML configuration < command-line options.
+EOF
+}
+
+die() { echo "poorman-aws: $*" >&2; exit 2; }
+warn() { echo "poorman-aws: warning: $*" >&2; }
+
+allowed_key() {
+  case "$1" in
+    version|application_name|infrastructure_repository|infrastructure_ref|\
+    aws.region|aws.state_bucket|backend.parameter_path|backend.compose_file|\
+    backend.caddy_file|backend.build_context|backend.dockerfile|\
+    defaults.instance_type|defaults.root_volume_size_gib|defaults.data_volume_size_gib)
+      return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+set_value() {
+  local key="$1" value="$2" source="$3"
+  allowed_key "$key" || die "unsupported configuration key: $key"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *$'\t'* ]] ||
+    die "configuration value for $key contains a prohibited control character"
+  values["$key"]="$value"
+  sources["$key"]="$source"
+}
+
+load_yaml_lines() {
+  local path="$1"
+  [[ -r "$path" ]] || die "configuration file is not readable: $path"
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
+    python3 - "$path" <<'PY'
+import sys
+import yaml
+
+allowed = {
+    "version", "application_name", "infrastructure_repository",
+    "infrastructure_ref", "aws.region", "aws.state_bucket",
+    "backend.parameter_path", "backend.compose_file", "backend.caddy_file",
+    "backend.build_context", "backend.dockerfile",
+    "defaults.instance_type", "defaults.root_volume_size_gib",
+    "defaults.data_volume_size_gib",
+}
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    document = yaml.safe_load(stream) or {}
+if not isinstance(document, dict):
+    raise SystemExit("configuration root must be a YAML mapping")
+
+def flatten(value, prefix=""):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise SystemExit("configuration keys must be strings")
+            child_key = f"{prefix}.{key}" if prefix else key
+            yield from flatten(child, child_key)
+    elif isinstance(value, (str, int, float, bool)) or value is None:
+        rendered = "" if value is None else str(value).lower() if isinstance(value, bool) else str(value)
+        yield prefix, rendered
+    else:
+        raise SystemExit(f"configuration value for {prefix} must be scalar")
+
+for key, value in flatten(document):
+    if key not in allowed:
+        raise SystemExit(f"unsupported configuration key: {key}")
+    print(f"{key}\t{value}")
+PY
+    return
+  fi
+
+  if command -v ruby >/dev/null 2>&1 && ruby -e 'require "yaml"' >/dev/null 2>&1; then
+    ruby -ryaml - "$path" <<'RUBY'
+allowed = %w[
+  version application_name infrastructure_repository infrastructure_ref
+  aws.region aws.state_bucket backend.parameter_path backend.compose_file
+  backend.caddy_file backend.build_context backend.dockerfile
+  defaults.instance_type defaults.root_volume_size_gib defaults.data_volume_size_gib
+]
+document = YAML.safe_load(File.read(ARGV.fetch(0)), permitted_classes: [], aliases: false) || {}
+abort 'configuration root must be a YAML mapping' unless document.is_a?(Hash)
+flatten = lambda do |value, prefix = '', &block|
+  if value.is_a?(Hash)
+    value.each do |key, child|
+      abort 'configuration keys must be strings' unless key.is_a?(String)
+      flatten.call(child, prefix.empty? ? key : "#{prefix}.#{key}", &block)
+    end
+  elsif value.is_a?(String) || value.is_a?(Numeric) || value == true || value == false || value.nil?
+    block.call(prefix, value.nil? ? '' : value.to_s)
+  else
+    abort "configuration value for #{prefix} must be scalar"
+  end
+end
+flatten.call(document) do |key, value|
+  abort "unsupported configuration key: #{key}" unless allowed.include?(key)
+  puts "#{key}\t#{value}"
+end
+RUBY
+    return
+  fi
+
+  die "YAML configuration requires Python 3 with PyYAML or Ruby with Psych"
+}
+
+load_defaults() {
+  set_value version 1 default
+  set_value application_name application default
+  set_value infrastructure_repository kanutocd/poorman-aws default
+  set_value infrastructure_ref main default
+  set_value aws.region ap-southeast-1 default
+  set_value backend.parameter_path /application/staging default
+  set_value backend.compose_file backend/compose.production.yaml default
+  set_value backend.caddy_file backend/Caddyfile default
+  set_value backend.build_context backend default
+  set_value backend.dockerfile backend/Dockerfile default
+  set_value defaults.instance_type t4g.micro default
+  set_value defaults.root_volume_size_gib 10 default
+  set_value defaults.data_volume_size_gib 20 default
+}
+
+load_config() {
+  local path='' parsed=''
+  if [[ "$config_explicit" == true ]]; then
+    path="$config_path"
+  elif [[ -f .poorman-aws.yml && -f .poorman-aws.yaml ]]; then
+    die 'both .poorman-aws.yml and .poorman-aws.yaml exist; use --config'
+  elif [[ -f .poorman-aws.yml ]]; then
+    path=.poorman-aws.yml
+  elif [[ -f .poorman-aws.yaml ]]; then
+    path=.poorman-aws.yaml
+  fi
+  [[ -z "$path" ]] && return
+  parsed="$(load_yaml_lines "$path")" || die "could not load configuration: $path"
+  while IFS=$'\t' read -r key value; do
+    [[ -n "$key" ]] && set_value "$key" "$value" "config:$path"
+  done <<< "$parsed"
+}
+
+parse_args() {
+  local key value arg
+  (($# > 0)) || { usage; exit 0; }
+  while (($# > 0)); do
+    arg="$1"
+    case "$arg" in
+      --help|-h) usage; exit 0 ;;
+      --version) printf '%s\n' 'poorman-aws wrapper contract 0.1.0'; exit 0 ;;
+      --config) (($# >= 2)) || die '--config requires a path'; config_path="$2"; config_explicit=true; shift 2; continue ;;
+      --non-interactive) non_interactive=true; shift; continue ;;
+      --json) json_output=true; shift; continue ;;
+      --dry-run) dry_run=true; shift; continue ;;
+      --application-name) key=application_name ;;
+      --infrastructure-repository) key=infrastructure_repository ;;
+      --infrastructure-ref) key=infrastructure_ref ;;
+      --aws-region) key=aws.region ;;
+      --state-bucket) key=aws.state_bucket ;;
+      --parameter-path) key=backend.parameter_path ;;
+      --compose-file) key=backend.compose_file ;;
+      --caddy-file) key=backend.caddy_file ;;
+      --build-context) key=backend.build_context ;;
+      --dockerfile) key=backend.dockerfile ;;
+      --instance-type) key=defaults.instance_type ;;
+      --root-volume-size-gib) key=defaults.root_volume_size_gib ;;
+      --data-volume-size-gib) key=defaults.data_volume_size_gib ;;
+      --*) die "unknown option: $arg" ;;
+      *)
+        if [[ -z "$command_name" ]]; then command_name="$arg"; else command_args+=("$arg"); fi
+        shift
+        continue ;;
+    esac
+    (($# >= 2)) || die "$arg requires a value"
+    cli_values["$key"]="$2"
+    shift 2
+  done
+  [[ -n "$command_name" ]] || die 'a command is required'
+}
+
+apply_cli_values() {
+  local key
+  for key in "${!cli_values[@]}"; do set_value "$key" "${cli_values[$key]}" cli; done
+}
+
+validate_values() {
+  [[ "${values[version]}" == 1 ]] || die 'configuration version must be 1'
+  [[ "${values[application_name]}" =~ ^[a-z][a-z0-9-]{1,32}$ ]] ||
+    die 'application_name must be 2-33 lowercase letters, numbers, or hyphens'
+  [[ "${values[infrastructure_repository]}" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] ||
+    die 'infrastructure_repository must be OWNER/REPOSITORY'
+  [[ -n "${values[infrastructure_ref]}" && "${values[infrastructure_ref]}" != *' '* ]] ||
+    die 'infrastructure_ref must be a non-empty ref'
+  [[ "${values[aws.region]}" =~ ^[a-z0-9-]+$ ]] || die 'aws.region is invalid'
+  [[ "${values[backend.parameter_path]}" =~ ^/[^/].*[^/]$ ]] ||
+    die 'backend.parameter_path must be an absolute SSM path'
+  [[ "${values[defaults.instance_type]}" =~ ^[a-z0-9.-]+$ ]] || die 'instance_type is invalid'
+  [[ "${values[defaults.root_volume_size_gib]}" =~ ^[0-9]+$ && "${values[defaults.root_volume_size_gib]}" -ge 8 ]] ||
+    die 'root_volume_size_gib must be an integer of at least 8'
+  [[ "${values[defaults.data_volume_size_gib]}" =~ ^[0-9]+$ && "${values[defaults.data_volume_size_gib]}" -ge 8 ]] ||
+    die 'data_volume_size_gib must be an integer of at least 8'
+}
+
+show_config() {
+  local key
+  if [[ "$json_output" == true ]]; then
+    command -v jq >/dev/null 2>&1 || die '--json requires jq'
+    for key in "${!values[@]}"; do printf '%s\t%s\t%s\n' "$key" "${values[$key]}" "${sources[$key]}"; done |
+      sort | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1], source: .[2]}]'
+  else
+    while IFS= read -r key; do
+      printf '%-36s %s (source: %s)\n' "$key" "${values[$key]}" "${sources[$key]}"
+    done < <(printf '%s\n' "${!values[@]}" | sort)
+  fi
+}
+
+doctor() {
+  local missing=0 command_name
+  for command_name in bash curl jq python3; do
+    if command -v "$command_name" >/dev/null 2>&1; then echo "ok: $command_name"; else echo "missing: $command_name" >&2; missing=1; fi
+  done
+  if (command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1) ||
+     (command -v ruby >/dev/null 2>&1 && ruby -e 'require "yaml"' >/dev/null 2>&1); then
+    echo 'ok: YAML parser (Python PyYAML or Ruby Psych)'
+  else
+    echo 'missing: YAML parser (Python PyYAML or Ruby Psych)' >&2
+    missing=1
+  fi
+  [[ -d .git ]] && echo 'ok: Git repository' || { echo 'missing: Git repository' >&2; missing=1; }
+  return "$missing"
+}
+
+reserved_command() {
+  warn "command '$*' is defined by the Phase 0 contract but not implemented yet"
+  warn 'use config validate/show or doctor; later phases add the operational adapter'
+  exit 3
+}
+
+main() {
+  parse_args "$@"
+  : "$non_interactive" "$dry_run"
+  load_defaults
+  load_config
+  apply_cli_values
+  validate_values
+  case "$command_name" in
+    config)
+      case "${command_args[0]:-}" in
+        validate) echo 'configuration valid' ;;
+        show) show_config ;;
+        *) die 'usage: config validate|show' ;;
+      esac ;;
+    doctor) doctor ;;
+    onboard) show_config ;;
+    parameters|ami|plan|apply|release|rollback|lifecycle)
+      reserved_command "$command_name ${command_args[*]:-}" ;;
+    help) usage ;;
+    *) die "unknown command: $command_name" ;;
+  esac
+}
+
+main "$@"

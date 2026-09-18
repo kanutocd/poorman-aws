@@ -59,6 +59,9 @@ jobs:
       - name: Check runtime secret rendering
         run: bash tests/runtime_secret_handling_test.sh
 
+      - name: Check consumer wrapper contract
+        run: bash tests/poorman_wrapper_test.sh
+
   packer:
     name: Packer
     runs-on: ubuntu-latest

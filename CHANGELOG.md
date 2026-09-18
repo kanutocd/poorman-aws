@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Consumer wrapper
+
+- Added the Phase 0 `bin/poorman-aws` contract wrapper with strict Bash
+  argument handling, YAML configuration discovery, explicit `--config`
+  support, command-line-over-configuration precedence, redacted effective
+  configuration output, prerequisite checks, and reserved operational
+  commands that fail closed until their adapters are implemented.
+- Added wrapper fixture coverage for defaults, YAML discovery, explicit
+  configuration failures, CLI precedence, JSON output, ambiguous config files,
+  and reserved-command safety.
+
 ### Added
 
 - Extracted application-neutral AWS infrastructure building blocks for a
