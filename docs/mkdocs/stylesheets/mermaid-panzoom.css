@@ -98,6 +98,26 @@
   max-height: none;
 }
 
+.mermaid-panzoom:fullscreen .mermaid-panzoom__toolbar {
+  gap: 0.3rem;
+  padding: 0.4rem;
+}
+
+.mermaid-panzoom:fullscreen .mermaid-panzoom__button {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.mermaid-panzoom:fullscreen .mermaid-panzoom__icon {
+  font-size: 1.5rem;
+}
+
+.mermaid-panzoom:fullscreen .mermaid-panzoom__zoom-level {
+  min-width: 4rem;
+  width: auto;
+  font-size: 1rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mermaid-panzoom .mermaid {
     transition: none;

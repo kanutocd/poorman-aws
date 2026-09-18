@@ -43,6 +43,8 @@
 
     var viewport = document.createElement("div");
     viewport.className = "mermaid-panzoom__viewport";
+    viewport.title = "Click and hold the left mouse button to pan the diagram";
+    viewport.setAttribute("aria-label", "Diagram canvas. Click and hold the left mouse button to pan.");
 
     var wrapper = document.createElement("div");
     wrapper.className = "mermaid-panzoom";
@@ -64,6 +66,7 @@
       iconElement.setAttribute("aria-hidden", "true");
       iconElement.textContent = icon;
       control.appendChild(iconElement);
+      control.iconElement = iconElement;
       control.addEventListener("click", handler);
       return control;
     }
@@ -81,6 +84,20 @@
       pinchScale: 1
     };
 
+    var panHint = "Click and hold the left mouse button to pan the diagram";
+    var zoomHint = "Use the mouse wheel or your touchpad to zoom in or out";
+
+    function updateCanvasHint(event) {
+      if (state.dragging) {
+        return;
+      }
+
+      var bounds = state.diagram.getBoundingClientRect();
+      var overDiagram = event.clientX >= bounds.left && event.clientX <= bounds.right &&
+        event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+      viewport.title = overDiagram ? panHint : zoomHint;
+    }
+
     state.zoomOut = button("Zoom out", "−", "mermaid-panzoom__zoom-out", function () {
       updateScale(state, state.scale - SCALE_STEP, viewport.clientWidth / 2, viewport.clientHeight / 2);
       render(state);
@@ -95,28 +112,62 @@
       render(state);
     });
 
-    var reset = button("Reset diagram view", "↺", "mermaid-panzoom__reset", function () {
+    function resetAndCenter() {
+      var transition = state.diagram.style.transition;
+      state.diagram.style.transition = "none";
       state.scale = 1;
       state.x = 0;
       state.y = 0;
       render(state);
+
+      // Wait for the container's new dimensions after a fullscreen transition
+      // before calculating the centered translation.
+      requestAnimationFrame(function () {
+        var diagramBounds = state.diagram.getBoundingClientRect();
+        var viewportBounds = viewport.getBoundingClientRect();
+        state.x = (viewportBounds.width - diagramBounds.width) / 2;
+        state.y = (viewportBounds.height - diagramBounds.height) / 2;
+        render(state);
+        state.diagram.style.transition = transition;
+      });
+    }
+
+    var reset = button("Reset diagram view", "↺", "mermaid-panzoom__reset", function () {
+      resetAndCenter();
     });
     state.reset = reset;
 
     var fullscreen = button("Open diagram fullscreen", "⛶", "mermaid-panzoom__fullscreen", function () {
-      if (wrapper.requestFullscreen) {
+      if (document.fullscreenElement === wrapper) {
+        if (document.exitFullscreen) {
+          document.exitFullscreen();
+        }
+      } else if (wrapper.requestFullscreen) {
         wrapper.requestFullscreen();
       }
     });
+
+    function updateFullscreenControl() {
+      var isFullscreen = document.fullscreenElement === wrapper;
+      var label = isFullscreen ? "Exit diagram fullscreen" : "Open diagram fullscreen";
+      fullscreen.setAttribute("aria-label", label);
+      fullscreen.title = label;
+      fullscreen.iconElement.textContent = isFullscreen ? "⤡" : "⛶";
+      resetAndCenter();
+    }
 
     toolbar.append(state.zoomOut, state.zoom, state.zoomIn, reset, fullscreen);
     wrapper.append(toolbar, viewport);
     originalParent.replaceChild(wrapper, diagram);
     viewport.appendChild(diagram);
+    document.addEventListener("fullscreenchange", function () {
+      updateFullscreenControl();
+    });
+    updateFullscreenControl();
 
     state.diagram.style.transformOrigin = "0 0";
     state.diagram.style.transition = "transform 120ms ease-out";
-    render(state);
+    resetAndCenter();
 
     viewport.addEventListener("wheel", function (event) {
       event.preventDefault();
@@ -153,6 +204,8 @@
     });
 
     viewport.addEventListener("pointermove", function (event) {
+      updateCanvasHint(event);
+
       if (!state.pointers.has(event.pointerId)) {
         return;
       }
