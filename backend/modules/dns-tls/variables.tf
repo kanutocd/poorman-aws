@@ -1,3 +1,8 @@
+variable "environment" {
+  description = "Deployment environment used to protect production teardown."
+  type        = string
+}
+
 variable "route53_zone_name" {
   type = string
 }

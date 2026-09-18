@@ -1,3 +1,11 @@
+resource "terraform_data" "production_destroy_guard" {
+  input = var.environment
+
+  lifecycle {
+    prevent_destroy = var.environment == "production"
+  }
+}
+
 data "aws_route53_zone" "by_name" {
   count        = var.route53_zone_id == null ? 1 : 0
   name         = var.route53_zone_name

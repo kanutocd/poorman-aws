@@ -10,6 +10,14 @@ locals {
   session_kms_key_arn = trimspace(var.ssm_session_kms_key_arn == null ? "" : var.ssm_session_kms_key_arn)
 }
 
+resource "terraform_data" "production_destroy_guard" {
+  input = var.environment
+
+  lifecycle {
+    prevent_destroy = var.environment == "production"
+  }
+}
+
 resource "aws_iam_role" "instance" {
   name = "${var.name}-instance"
 

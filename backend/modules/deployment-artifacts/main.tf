@@ -1,3 +1,11 @@
+resource "terraform_data" "production_destroy_guard" {
+  input = var.environment
+
+  lifecycle {
+    prevent_destroy = var.environment == "production"
+  }
+}
+
 resource "aws_s3_bucket" "this" {
   bucket        = var.bucket_name
   bucket_prefix = var.bucket_name == null ? "${var.name}-artifacts-" : null

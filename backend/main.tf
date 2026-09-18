@@ -23,6 +23,7 @@ resource "terraform_data" "production_destroy_guard" {
 module "networking" {
   source = "./modules/networking"
 
+  environment        = var.environment
   name               = local.name
   availability_zone  = var.availability_zone
   vpc_cidr           = var.vpc_cidr
@@ -33,6 +34,7 @@ module "networking" {
 module "deployment_artifacts" {
   source = "./modules/deployment-artifacts"
 
+  environment            = var.environment
   name                   = local.name
   bucket_name            = var.artifact_bucket_name
   artifact_prefix        = var.artifact_prefix
@@ -68,6 +70,7 @@ module "compute" {
 module "dns_tls" {
   source = "./modules/dns-tls"
 
+  environment       = var.environment
   route53_zone_name = var.route53_zone_name
   route53_zone_id   = var.route53_zone_id
   api_hostname      = local.api_hostname

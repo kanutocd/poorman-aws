@@ -1,3 +1,11 @@
+resource "terraform_data" "production_destroy_guard" {
+  input = var.environment
+
+  lifecycle {
+    prevent_destroy = var.environment == "production"
+  }
+}
+
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
