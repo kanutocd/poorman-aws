@@ -73,7 +73,7 @@ objective and a 4-hour recovery time objective. Production backup coverage
 cannot be disabled through OpenTofu.
 
 The recovery and quarterly restore-rehearsal procedure is documented in
-[`docs/recovery.md`](../docs/recovery.md). It covers the production retained
+[`docs/mkdocs/recovery.md`](../docs/mkdocs/recovery.md). It covers the production retained
 data volume, Docker/Caddy state, immutable release artifacts, and explicit
 release rollback.
 
