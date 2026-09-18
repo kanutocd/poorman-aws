@@ -11,7 +11,8 @@ The env file is read locally and values are never printed. Dry-run is the
 default; --apply writes parameters beneath the configured parameter path. The
 clear-parameter mode removes one named parameter. Runtime values are
 SecureString by default; repeat --non-secret NAME for explicitly non-secret
-values.
+values. Existing parameter types are preserved unless --allow-type-change is
+explicitly provided.
 EOF
 }
 
@@ -21,16 +22,36 @@ application_name="${APPLICATION_NAME:-application}"
 parameter_path="${SSM_PARAMETER_PATH:-}"
 clear_parameter=""
 non_secret_parameters=()
+allow_type_change=false
 apply=false
 
 while (($# > 0)); do
   case "$1" in
-    --environment) shift; environment="${1:-}" ;;
-    --from-env-file) shift; environment_file="${1:-}" ;;
-    --application-name) shift; application_name="${1:-}" ;;
-    --parameter-path) shift; parameter_path="${1:-}" ;;
-    --clear-parameter) shift; clear_parameter="${1:-}" ;;
-    --non-secret) shift; non_secret_parameters+=("${1:-}") ;;
+    --environment)
+      (($# >= 2)) || { echo "--environment requires a value" >&2; exit 1; }
+      shift; environment="$1"
+      ;;
+    --from-env-file)
+      (($# >= 2)) || { echo "--from-env-file requires a path" >&2; exit 1; }
+      shift; environment_file="$1"
+      ;;
+    --application-name)
+      (($# >= 2)) || { echo "--application-name requires a value" >&2; exit 1; }
+      shift; application_name="$1"
+      ;;
+    --parameter-path)
+      (($# >= 2)) || { echo "--parameter-path requires a path" >&2; exit 1; }
+      shift; parameter_path="$1"
+      ;;
+    --clear-parameter)
+      (($# >= 2)) || { echo "--clear-parameter requires a name" >&2; exit 1; }
+      shift; clear_parameter="$1"
+      ;;
+    --non-secret)
+      (($# >= 2)) || { echo "--non-secret requires a parameter name" >&2; exit 1; }
+      shift; non_secret_parameters+=("$1")
+      ;;
+    --allow-type-change) allow_type_change=true ;;
     --apply) apply=true ;;
     --help) usage; exit 0 ;;
     *) usage; exit 1 ;;
@@ -95,6 +116,7 @@ parameter_type() {
   printf 'SecureString'
 }
 
+declare -A seen_parameters=()
 parameters=()
 while IFS= read -r line || [[ -n "$line" ]]; do
   [[ -z "$line" || "$line" == \#* ]] && continue
@@ -108,16 +130,29 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     echo "unsupported runtime parameter: $name" >&2
     exit 1
   }
+  [[ -n "$value" ]] || {
+    echo "runtime parameter values cannot be empty: $name" >&2
+    exit 1
+  }
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || {
     echo "runtime parameters must be single-line values" >&2
     exit 1
   }
+  [[ ! -v "seen_parameters[$name]" ]] || {
+    echo "duplicate runtime parameter: $name" >&2
+    exit 1
+  }
+  seen_parameters["$name"]=1
   parameters+=("$name"$'\t'"$value")
 done <"$environment_file"
 
 for non_secret_parameter in "${non_secret_parameters[@]}"; do
   allowed_parameter "$non_secret_parameter" || {
     echo "unsupported non-secret parameter: $non_secret_parameter" >&2
+    exit 1
+  }
+  [[ -v "seen_parameters[$non_secret_parameter]" ]] || {
+    echo "non-secret parameter is not present in the environment file: $non_secret_parameter" >&2
     exit 1
   }
 done
@@ -133,6 +168,15 @@ for parameter in "${parameters[@]}"; do
   echo "$parameter_path/$name ($type)"
   if [[ "$apply" == true ]]; then
     value="${parameter#*$'\t'}"
+    existing_type=""
+    if existing_type="$(aws ssm get-parameter --region "$aws_region" \
+      --name "$parameter_path/$name" --query 'Parameter.Type' --output text \
+      --no-cli-pager 2>/dev/null)"; then
+      if [[ -n "$existing_type" && "$existing_type" != 'None' && "$existing_type" != "$type" && "$allow_type_change" != true ]]; then
+        echo "existing parameter type for $parameter_path/$name is $existing_type; pass --allow-type-change to migrate it" >&2
+        exit 1
+      fi
+    fi
     aws ssm put-parameter --region "$aws_region" \
       --name "$parameter_path/$name" --type "$type" --value "$value" \
       --overwrite --no-cli-pager >/dev/null
