@@ -1,0 +1,111 @@
+:root {
+  --docs-sidebar-control-size: 1.5rem;
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-sidebar {
+    position: relative;
+    min-width: 0;
+    transition: width 160ms ease-out;
+  }
+
+  .md-sidebar--primary {
+    order: 0;
+  }
+
+  .docs-sidebar--collapsed {
+    overflow: visible;
+  }
+
+  .docs-sidebar--collapsed > .md-sidebar__scrollwrap {
+    visibility: hidden;
+    pointer-events: none;
+    opacity: 0;
+  }
+
+  .docs-sidebar-controls {
+    position: absolute;
+    top: 0;
+    height: calc(100vh - 4rem);
+    width: 0.5rem;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+  }
+
+  .md-sidebar--primary .docs-sidebar-controls {
+    right: calc(var(--docs-sidebar-control-size) / -2);
+  }
+
+  .md-sidebar--secondary .docs-sidebar-controls {
+    left: calc(var(--docs-sidebar-control-size) / -2);
+  }
+
+  .md-sidebar--primary .docs-sidebar-toggle {
+    right: 0;
+  }
+
+  .md-sidebar--secondary .docs-sidebar-toggle {
+    left: 0;
+  }
+
+  .docs-sidebar-toggle,
+  .docs-sidebar-resize-handle {
+    color: var(--md-default-fg-color);
+    background: var(--md-default-bg-color);
+    border: 1px solid var(--md-default-fg-color--lightest);
+  }
+
+  .docs-sidebar-toggle {
+    position: absolute;
+    top: -2.2rem;
+    bottom: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.8rem;
+    height: 1.3rem;
+    padding: 0;
+    color: var(--md-default-fg-color);
+    border-radius: 0.20rem;
+    box-shadow: var(--md-shadow-z2);
+    font-size: 1.1rem;
+    font-weight: 900;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .docs-sidebar-resize-handle {
+    position: absolute;
+    inset: 0;
+    width: 0.15rem;
+    height: auto;
+    padding: 0;
+    margin: 0;
+    border-radius: 0.20rem;
+    background: var(--md-default-fg-color--lightest);
+    cursor: col-resize;
+    opacity: 0.55;
+  }
+
+  .docs-sidebar-resize-handle:hover,
+  .docs-sidebar-resize-handle:focus-visible,
+  .docs-sidebar-toggle:hover,
+  .docs-sidebar-toggle:focus-visible {
+    opacity: 0.9;
+    outline: 1px solid var(--md-accent-fg-color);
+    outline-offset: 1px;
+  }
+
+  .docs-sidebar-resizing,
+  .docs-sidebar-resizing * {
+    cursor: col-resize !important;
+    user-select: none !important;
+  }
+}
+
+@media screen and (max-width: 76.234375em) {
+  .docs-sidebar-controls {
+    display: none;
+  }
+}
