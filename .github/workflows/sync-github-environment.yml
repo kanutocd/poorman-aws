@@ -21,7 +21,7 @@ on:
         default: ''
         type: string
     secrets:
-      github_token:
+      environment_admin_token:
         description: Optional token with permission to manage repository environments
         required: false
       environment_secrets:
@@ -62,7 +62,7 @@ jobs:
 
       - name: Synchronize environment
         env:
-          GH_TOKEN: ${{ secrets.github_token || github.token }}
+          GH_TOKEN: ${{ secrets.environment_admin_token || github.token }}
         run: |
           set -euo pipefail
           poorman-aws/bin/sync-github-environment \

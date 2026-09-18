@@ -193,11 +193,11 @@ jobs:
         AWS_REGION=ap-southeast-1
         API_BASE_URL=https://api.example.test
     secrets:
-      github_token: ${{ secrets.ENVIRONMENT_ADMIN_TOKEN }}
+      environment_admin_token: ${{ secrets.ENVIRONMENT_ADMIN_TOKEN }}
       environment_secrets: ${{ secrets.STAGING_ENVIRONMENT_SECRETS }}
 ```
 
-The caller must provide `github_token` or grant the called workflow's
+The caller must provide `environment_admin_token` or grant the called workflow's
 `GITHUB_TOKEN` the ability to manage repository environments, variables, and
 secrets. Keep `environment_secrets` as a protected multiline secret; never
 pass secret values through `with` inputs.
