@@ -91,22 +91,22 @@ jobs:
 
     steps:
       - name: Check out consumer repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.consumer_ref }}
 
       - name: Check out infrastructure repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ inputs.infrastructure_repository }}
           ref: ${{ inputs.infrastructure_ref }}
           path: poorman-aws
 
       - name: Set up OpenTofu
-        uses: opentofu/setup-opentofu@v2
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4
 
       - name: Configure AWS credentials through OIDC
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.aws_role_arn }}
