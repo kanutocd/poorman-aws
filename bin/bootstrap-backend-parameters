@@ -9,7 +9,9 @@ Usage:
 
 The env file is read locally and values are never printed. Dry-run is the
 default; --apply writes parameters beneath the configured parameter path. The
-clear-parameter mode removes one named parameter.
+clear-parameter mode removes one named parameter. Runtime values are
+SecureString by default; repeat --non-secret NAME for explicitly non-secret
+values.
 EOF
 }
 
@@ -18,6 +20,7 @@ environment_file=""
 application_name="${APPLICATION_NAME:-application}"
 parameter_path="${SSM_PARAMETER_PATH:-}"
 clear_parameter=""
+non_secret_parameters=()
 apply=false
 
 while (($# > 0)); do
@@ -27,6 +30,7 @@ while (($# > 0)); do
     --application-name) shift; application_name="${1:-}" ;;
     --parameter-path) shift; parameter_path="${1:-}" ;;
     --clear-parameter) shift; clear_parameter="${1:-}" ;;
+    --non-secret) shift; non_secret_parameters+=("${1:-}") ;;
     --apply) apply=true ;;
     --help) usage; exit 0 ;;
     *) usage; exit 1 ;;
@@ -81,11 +85,14 @@ allowed_parameter() {
 }
 
 parameter_type() {
-  if [[ "$1" =~ (API_KEY|TOKEN|PASSWORD|SECRET|PRIVATE_KEY)$ ]]; then
-    printf 'SecureString'
-  else
-    printf 'String'
-  fi
+  local parameter_name="$1"
+  for non_secret_parameter in "${non_secret_parameters[@]}"; do
+    [[ "$parameter_name" == "$non_secret_parameter" ]] && {
+      printf 'String'
+      return
+    }
+  done
+  printf 'SecureString'
 }
 
 parameters=()
@@ -107,6 +114,13 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   }
   parameters+=("$name"$'\t'"$value")
 done <"$environment_file"
+
+for non_secret_parameter in "${non_secret_parameters[@]}"; do
+  allowed_parameter "$non_secret_parameter" || {
+    echo "unsupported non-secret parameter: $non_secret_parameter" >&2
+    exit 1
+  }
+done
 
 [[ "${#parameters[@]}" -gt 0 ]] || {
   echo "no runtime parameters found" >&2
