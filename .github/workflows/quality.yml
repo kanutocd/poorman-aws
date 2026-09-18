@@ -62,6 +62,9 @@ jobs:
       - name: Check consumer wrapper contract
         run: bash tests/poorman_wrapper_test.sh
 
+      - name: Check wrapper release reproducibility and parity
+        run: bash tests/wrapper_release_test.sh
+
   packer:
     name: Packer
     runs-on: ubuntu-latest

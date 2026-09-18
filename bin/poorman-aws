@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+wrapper_source="${BASH_SOURCE[0]-}"
+if [[ -n "$wrapper_source" && "$wrapper_source" != /dev/stdin && "$wrapper_source" != bash ]]; then
+  script_directory="$(cd "$(dirname "$wrapper_source")" && pwd)"
+else
+  script_directory=''
+fi
 
 # Self-contained consumer entry point. It is intentionally safe:
 # operational commands are reserved until their adapters are implemented.

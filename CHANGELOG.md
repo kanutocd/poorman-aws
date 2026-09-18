@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file.
 
 ### Consumer wrapper
 
+- Added reproducible versioned wrapper packaging with SHA-256 checksums,
+  release notes, a tag-triggered GitHub release workflow, and cloned-versus-
+  piped execution parity tests.
+- Added release-hardening guidance for downloading, verifying, reviewing, and
+  executing wrapper artifacts without relying on `curl | bash`.
 - Added operational adapters for protected infrastructure plan/apply,
   backend release, rollback, AMI build, runtime parameter, and staging-only
   lifecycle workflow dispatches. Mutating operations require explicit

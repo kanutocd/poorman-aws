@@ -43,6 +43,7 @@ bash tests/deployment_policy_test.sh
 bash tests/bootstrap_backend_parameters_test.sh
 bash tests/runtime_secret_handling_test.sh
 bash tests/poorman_wrapper_test.sh
+bash tests/wrapper_release_test.sh
 
 echo "Checking Docker Compose configuration"
 runtime_env_path="backend/runtime.env"

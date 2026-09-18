@@ -290,6 +290,24 @@ non-secret consumer and infrastructure settings; secrets must come from
 protected environments or runtime credentials. Production usage should pin a
 release and verify its checksum instead of piping a floating branch to Bash.
 
+For production, prefer downloading and reviewing the versioned wrapper artifact
+before executing it:
+
+```bash
+release=v1.5.4
+base="https://github.com/kanutocd/poorman-aws/releases/download/$release"
+curl -fL -o "poorman-aws-$release" "$base/poorman-aws-$release"
+curl -fL -o "poorman-aws-$release.sha256" "$base/poorman-aws-$release.sha256"
+sha256sum -c "poorman-aws-$release.sha256"
+bash "poorman-aws-$release" doctor --offline
+```
+
+The release workflow creates the wrapper, checksum, and release notes from the
+tagged source. Cloning the exact tag and invoking `bin/poorman-aws` is an
+equivalent alternative. `curl | bash` remains useful for exploratory work,
+but it should be limited to reviewed immutable references and is less
+auditable than checksum verification.
+
 ## Reusable workflows
 
 The repository publishes these consumer-facing `workflow_call` entry points:

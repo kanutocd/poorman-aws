@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: package-wrapper --version VERSION --output-dir PATH
+
+Creates a versioned self-contained wrapper, its SHA-256 checksum, and release
+notes suitable for a GitHub release upload.
+EOF
+}
+
+version=''
+output_directory=''
+while (($# > 0)); do
+  case "$1" in
+    --version) (($# >= 2)) || { echo '--version requires a value' >&2; exit 1; }; version="$2"; shift 2 ;;
+    --output-dir) (($# >= 2)) || { echo '--output-dir requires a path' >&2; exit 1; }; output_directory="$2"; shift 2 ;;
+    --help) usage; exit 0 ;;
+    *) usage; exit 1 ;;
+  esac
+done
+
+[[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+  echo 'version must be a SemVer-like value such as v1.5.4' >&2
+  exit 1
+}
+[[ -n "$output_directory" ]] || { echo '--output-dir is required' >&2; exit 1; }
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+wrapper_source="$project_root/bin/poorman-aws"
+[[ -r "$wrapper_source" ]] || { echo "wrapper source is missing: $wrapper_source" >&2; exit 1; }
+
+mkdir -p "$output_directory"
+artifact_name="poorman-aws-$version"
+artifact_path="$output_directory/$artifact_name"
+checksum_path="$artifact_path.sha256"
+notes_path="$output_directory/release-notes.md"
+sed "s/poorman-aws wrapper contract 0.1.0/poorman-aws wrapper contract $version/" \
+  "$wrapper_source" >"$artifact_path"
+chmod 0755 "$artifact_path"
+(cd "$output_directory" && sha256sum "$artifact_name") >"$checksum_path"
+
+{
+  printf '# poorman-aws %s\n\n' "$version"
+  awk '
+    /^## \[Unreleased\]/ { found = 1; next }
+    found && /^## / { exit }
+    found { print }
+  ' "$project_root/CHANGELOG.md"
+  printf '\nThe wrapper artifact is self-contained and its checksum is in `%s`.\n' "$(basename "$checksum_path")"
+} >"$notes_path"
+
+printf 'packaged %s\n' "$artifact_path"
+printf 'checksum %s\n' "$checksum_path"
+printf 'release notes %s\n' "$notes_path"
