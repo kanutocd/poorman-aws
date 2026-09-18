@@ -52,6 +52,7 @@ nav:
   - Getting started:
       - Choose a deployment shape: getting-started/choose-a-deployment-shape.md
       - Prerequisites: getting-started/prerequisites.md
+      - From zero to staging: getting-started/from-zero-to-staging.md
       - First deployment: getting-started/first-deployment.md
   - Concepts:
       - Architecture: architecture.md
@@ -69,6 +70,7 @@ nav:
       - Backend workflows: reference/backend-workflows.md
       - Frontend workflows: reference/frontend-workflows.md
       - Operational workflows: reference/operational-workflows.md
+      - Roadmap and deferred work: roadmap.md
       - Quality checks: quality.md
       - Change management: change-management.md
   - Contributing:

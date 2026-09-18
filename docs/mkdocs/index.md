@@ -17,6 +17,7 @@ not a multi-AZ platform or a complete application runtime.
 - [Choose how to consume the wrapper](getting-started/first-deployment.md#choose-a-consumption-mode)
 - [Choose a deployment shape](getting-started/choose-a-deployment-shape.md)
 - [Review prerequisites](getting-started/prerequisites.md)
+- [Follow the zero-to-staging path](getting-started/from-zero-to-staging.md)
 - [Complete a first deployment](getting-started/first-deployment.md)
 - [Read the architecture](architecture.md)
 - [Run quality checks](quality.md)

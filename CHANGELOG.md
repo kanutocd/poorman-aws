@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 ### Documentation
 
+- Added a canonical “From zero to staging” guide that separates one-time AWS
+  administrator setup, one-time consumer repository setup, repeatable staging
+  deployment, and repeatable release, rollback, and teardown.
+- Documented direct pinned raw-script consumption for the AWS OIDC bootstrap
+  and GitHub environment synchronizer, so both setup operations work without a
+  full repository clone.
+- Recorded the deferred wrapper adapters for AWS OIDC bootstrap and GitHub
+  environment synchronization in the public roadmap, including their
+  privilege, secret-handling, and immutable-ref requirements.
 - Added a public MkDocs-compatible documentation site with task-oriented
   onboarding, deployment, security, cost, recovery, and contribution guidance.
 - Added a complete reusable-workflow reference covering backend infrastructure,
