@@ -16,7 +16,6 @@ require_command packer
 require_command bash
 require_command docker
 require_command shellcheck
-require_command rg
 
 echo "Checking OpenTofu formatting"
 tofu fmt -check -recursive backend

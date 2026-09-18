@@ -8,7 +8,7 @@ backend_root="$project_root/backend"
 assert_contains() {
   local pattern="$1"
   local file="$2"
-  rg -q --fixed-strings -- "$pattern" "$file" || {
+  grep -Fq -- "$pattern" "$file" || {
     echo "missing contract: $pattern ($file)" >&2
     exit 1
   }
@@ -17,7 +17,7 @@ assert_contains() {
 assert_absent() {
   local pattern="$1"
   local file="$2"
-  if rg -q --fixed-strings -- "$pattern" "$file"; then
+  if grep -Fq -- "$pattern" "$file"; then
     echo "forbidden contract found: $pattern ($file)" >&2
     exit 1
   fi
