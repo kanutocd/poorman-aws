@@ -47,6 +47,11 @@ All notable changes to this project are documented in this file.
 - Added a production recovery runbook covering the 24-hour RPO, 4-hour RTO,
   retained data-volume restore, Docker/Caddy state coverage, release rollback,
   and quarterly restore rehearsals.
+- Pinned all GitHub Actions to immutable commit SHAs or digests and added the
+  `workflow_action_pin_test.sh` check to local and CI quality enforcement.
+- Added quality-tooling and infrastructure change-management documentation,
+  including local OpenTofu/Packer limitations and review requirements for IAM,
+  lifecycle, retention, recovery, and workflow changes.
 - Added plan-only artifact lifecycle assertions for the 30-day current and
   noncurrent release retention windows, and clarified that Docker/Caddy state
   is recovered from the durable data EBS volume.

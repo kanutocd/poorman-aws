@@ -72,6 +72,11 @@ or populated environment files. Use the example files as templates only.
 
 ## Repository prerequisites
 
+Quality-tool prerequisites and the local/CI execution boundary are documented
+in [`docs/quality.md`](docs/quality.md). Infrastructure change review
+requirements are documented in
+[`docs/change-management.md`](docs/change-management.md).
+
 These prerequisites apply only when contributing to or running quality checks
 from a local clone of this `poorman-aws` repository. A consumer using the
 versioned OpenTofu modules, scripts, or reusable workflows does not need to
