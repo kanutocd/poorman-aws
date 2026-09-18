@@ -52,14 +52,9 @@ cp example.pkrvars.hcl local.pkrvars.hcl
 ```
 
 then replace `subnet_id` and `ssh_cidr` in `local.pkrvars.hcl`.
-
-
 For the Packer build, use an existing public subnet—preferably the default VPC
 subnet in the chosen region, such as `ap-southeast-1`.
-
-
 Find one using the AWS CLI:
-
 
 ```bash
 AWS_PROFILE=administrator aws ec2 describe-subnets \

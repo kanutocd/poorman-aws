@@ -73,9 +73,9 @@ or populated environment files. Use the example files as templates only.
 ## Repository prerequisites
 
 Quality-tool prerequisites and the local/CI execution boundary are documented
-in [`docs/quality.md`](docs/quality.md). Infrastructure change review
+in [`docs/mkdocs/quality.md`](docs/mkdocs/quality.md). Infrastructure change review
 requirements are documented in
-[`docs/change-management.md`](docs/change-management.md).
+[`docs/mkdocs/change-management.md`](docs/mkdocs/change-management.md).
 
 These prerequisites apply only when contributing to or running quality checks
 from a local clone of this `poorman-aws` repository. A consumer using the
@@ -425,7 +425,7 @@ Use the following policy when publishing and consuming releases:
 
 ## Architecture
 
-See [`docs/architecture.md`](docs/architecture.md) for the current system
+See [`docs/mkdocs/architecture.md`](docs/mkdocs/architecture.md) for the current system
 context, AWS network topology, browser/API request flow, release activation
 flow, secret flow, administrative access path, and lifecycle states.
 

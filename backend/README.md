@@ -22,7 +22,7 @@ owns its S3 bucket, CloudFront distribution, `app.<domain>` alias, and
 us-east-1 ACM certificate. This backend root consumes no frontend state and can
 be applied before or after a static frontend deployment.
 
-### Existing state migration
+## Existing state migration
 
 If an older backend state managed frontend ACM or CloudFront DNS resources,
 do not apply this backend configuration immediately. First import or adopt
