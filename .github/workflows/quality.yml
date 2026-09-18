@@ -37,13 +37,16 @@ jobs:
 
       - name: Run OpenTofu module tests
         run: |
-          for module_path in backend/modules/deployment-artifacts backend/modules/networking; do
+          for module_path in backend/modules/compute backend/modules/deployment-artifacts backend/modules/networking; do
             (
               cd "$module_path"
               tofu init -backend=false -input=false
               tofu test -no-color
             )
           done
+
+      - name: Check policy contract
+        run: bash tests/policy_contract_test.sh
 
   packer:
     name: Packer
@@ -102,10 +105,10 @@ jobs:
           sudo apt-get install --yes --no-install-recommends shellcheck
 
       - name: Check Bash syntax
-        run: bash -n bin/* backend/scripts/* backend/packer/scripts/*.sh
+        run: bash -n bin/* backend/scripts/* backend/packer/scripts/*.sh tests/*.sh
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning bin/* backend/scripts/* backend/packer/scripts/*.sh
+        run: shellcheck --severity=warning bin/* backend/scripts/* backend/packer/scripts/*.sh tests/*.sh
 
   actionlint:
     name: GitHub Actions
