@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Frontend lifecycle
+
+- Added the generic `bin/frontend-lifecycle` guard for non-production
+  CloudFront-backed frontends, supporting dry-run, guarded `DESTROY`/`NUKE`,
+  exact action/environment confirmations, production refusal, unique hostname
+  matching, CloudFront disable-and-wait ordering, and an optional consumer
+  removal command.
+- Added the reusable `kill-frontend-non-production` workflow with separate
+  frontend OIDC role input, immutable infrastructure and consumer refs, and
+  consumer-neutral hostname, directory, and removal-command inputs.
+- Added focused lifecycle contract tests covering dry-run, confirmation,
+  production refusal, missing and already-disabled distributions, CloudFront
+  disablement ordering, and removal-command failure propagation.
+
 ### Consumer wrapper
 
 - Documented `v0.1.0` as the baseline release reference and full commit SHAs

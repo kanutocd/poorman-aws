@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+action=${FRONTEND_LIFECYCLE_ACTION:?FRONTEND_LIFECYCLE_ACTION is required}
+confirmation=${FRONTEND_LIFECYCLE_CONFIRMATION:?FRONTEND_LIFECYCLE_CONFIRMATION is required}
+apply=${FRONTEND_LIFECYCLE_APPLY:-false}
+environment=${FRONTEND_LIFECYCLE_ENVIRONMENT:?FRONTEND_LIFECYCLE_ENVIRONMENT is required}
+hostname=${FRONTEND_HOSTNAME:?FRONTEND_HOSTNAME is required}
+frontend_directory=${FRONTEND_DIRECTORY:-.}
+remove_command=${FRONTEND_REMOVE_COMMAND:-}
+
+[[ "$environment" != production ]] || {
+  echo "frontend lifecycle operations are not supported for production" >&2
+  exit 1
+}
+[[ "$action" =~ ^(DESTROY|NUKE)$ ]] || {
+  echo "frontend lifecycle supports only DESTROY or NUKE" >&2
+  exit 1
+}
+expected="${action}-${environment^^}"
+[[ "$apply" != true || "$confirmation" == "$expected" ]] || {
+  echo "apply requires confirmation $expected" >&2
+  exit 1
+}
+
+distribution_ids=()
+while IFS= read -r distribution_id; do
+  [[ -n "$distribution_id" ]] && distribution_ids+=("$distribution_id")
+done < <(
+  aws cloudfront list-distributions --output json |
+    jq -r --arg hostname "$hostname" '[.DistributionList.Items[] | select((.Aliases.Items // []) | index($hostname)) | .Id] | .[]'
+)
+
+if (( ${#distribution_ids[@]} > 1 )); then
+  echo "more than one CloudFront distribution matched $hostname" >&2
+  exit 1
+fi
+
+if (( ${#distribution_ids[@]} == 0 )); then
+  echo "no CloudFront distribution found for $hostname"
+else
+  distribution_id=${distribution_ids[0]}
+  config="$(aws cloudfront get-distribution-config --id "$distribution_id" --output json)"
+  enabled="$(jq -r '.DistributionConfig.Enabled' <<<"$config")"
+  echo "CloudFront distribution $distribution_id enabled=$enabled"
+
+  if [[ "$enabled" == true && "$apply" == true ]]; then
+    temporary_directory="$(mktemp -d)"
+    trap 'rm -rf "$temporary_directory"' EXIT
+    jq '.DistributionConfig | .Enabled = false' <<<"$config" >"$temporary_directory/distribution-config.json"
+    aws cloudfront update-distribution \
+      --id "$distribution_id" \
+      --if-match "$(jq -r .ETag <<<"$config")" \
+      --distribution-config "file://$temporary_directory/distribution-config.json" >/dev/null
+    aws cloudfront wait distribution-deployed --id "$distribution_id"
+    echo "CloudFront distribution $distribution_id is disabled and deployed"
+  fi
+fi
+
+if [[ "$action" == NUKE ]]; then
+  if [[ "$apply" == true ]]; then
+    [[ -n "$remove_command" ]] || {
+      echo "FRONTEND_REMOVE_COMMAND is required for an applied NUKE" >&2
+      exit 1
+    }
+    cd "$frontend_directory"
+    bash -euo pipefail -c "$remove_command"
+  else
+    echo "Dry run only. NUKE would remove the frontend stage from $frontend_directory"
+  fi
+fi

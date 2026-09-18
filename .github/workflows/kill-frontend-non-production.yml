@@ -1,0 +1,116 @@
+name: Kill non-production frontend environment
+
+on:
+  workflow_call:
+    inputs:
+      infrastructure_repository:
+        description: "Repository containing the reusable infrastructure"
+        required: true
+        type: string
+      infrastructure_ref:
+        description: "Immutable ref of the reusable infrastructure"
+        required: true
+        type: string
+      application_name:
+        description: "Application identifier used in workflow names"
+        required: true
+        type: string
+      environment:
+        description: "Non-production environment"
+        required: true
+        type: string
+      action:
+        description: "DESTROY or NUKE"
+        required: true
+        type: string
+      confirmation:
+        description: "Action-specific confirmation phrase"
+        required: true
+        type: string
+      apply:
+        description: "Actually execute the selected action"
+        required: false
+        default: false
+        type: boolean
+      aws_region:
+        description: "AWS region used by the frontend lifecycle operation"
+        required: true
+        type: string
+      frontend_hostname:
+        description: "Public hostname mapped to the CloudFront distribution"
+        required: true
+        type: string
+      frontend_directory:
+        description: "Consumer repository directory containing the frontend"
+        required: false
+        default: frontend
+        type: string
+      frontend_remove_command:
+        description: "Consumer-approved command used only by applied NUKE"
+        required: false
+        type: string
+      consumer_ref:
+        description: "Immutable consumer ref containing the removal command"
+        required: true
+        type: string
+    secrets:
+      aws_role_arn:
+        description: "Frontend-only IAM role allowed to manage the environment"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ inputs.application_name }}-frontend-lifecycle-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  lifecycle:
+    name: ${{ inputs.action }} ${{ inputs.environment }} frontend
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Reject floating infrastructure ref
+        if: inputs.infrastructure_ref == 'main' || inputs.infrastructure_ref == 'master'
+        run: |
+          echo 'frontend lifecycle operations require an immutable infrastructure ref' >&2
+          exit 1
+
+      - name: Reject production lifecycle operations
+        if: inputs.environment == 'production'
+        run: |
+          echo 'frontend lifecycle operations are not supported for production' >&2
+          exit 1
+
+      - name: Check out consumer repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.consumer_ref }}
+
+      - name: Check out infrastructure repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ inputs.infrastructure_repository }}
+          ref: ${{ inputs.infrastructure_ref }}
+          path: poorman-aws
+
+      - name: Configure frontend AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-frontend-lifecycle-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Apply frontend lifecycle guard
+        env:
+          FRONTEND_LIFECYCLE_ACTION: ${{ inputs.action }}
+          FRONTEND_LIFECYCLE_CONFIRMATION: ${{ inputs.confirmation }}
+          FRONTEND_LIFECYCLE_APPLY: ${{ inputs.apply }}
+          FRONTEND_LIFECYCLE_ENVIRONMENT: ${{ inputs.environment }}
+          FRONTEND_HOSTNAME: ${{ inputs.frontend_hostname }}
+          FRONTEND_DIRECTORY: ${{ inputs.frontend_directory }}
+          FRONTEND_REMOVE_COMMAND: ${{ inputs.frontend_remove_command }}
+        run: bash poorman-aws/bin/frontend-lifecycle
