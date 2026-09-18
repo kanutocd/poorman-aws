@@ -17,28 +17,26 @@ the public ingress, loopback listener, secret, and lifecycle boundaries below.
 
 ## System context
 
-The application consists of a public frontend hosted by CloudFront/S3 and an
-independent public API hostname routed to the backend EC2 host. The frontend
-may use an optional non-secret `API_BASE_URL` build/runtime variable to call the
-API, but frontend deployment does not require backend infrastructure. The
-backend reaches consumer-selected external dependencies over outbound Internet
-access. Any Redis, search, or other dependent services are internal Compose
-services and are never published to the Internet.
+The application may have a public frontend hosted by consumer-selected static
+hosting and an independent public API hostname routed to the backend EC2 host.
+The frontend may use an optional non-secret `API_BASE_URL` build/runtime
+variable to call the API, but frontend deployment does not require backend
+infrastructure. The backend reaches consumer-selected external dependencies
+over outbound Internet access. Any database, queue, cache, search, or other
+dependent services are internal Compose services and are never published to
+the Internet.
 
 ```mermaid
 flowchart LR
     User[Browser user]
-    FrontendDNS[Route 53 frontend alias]
-    CloudFront[CloudFront distribution]
-    FrontendS3[Private frontend asset origin]
+    FrontendDNS[Frontend DNS]
+    FrontendHosting[Consumer-owned frontend hosting]
     APIDNS[Route 53 API A record]
     API[Public backend HTTPS edge]
-    Providers[AI providers]
     Dependencies[External dependencies]
 
-    User --> FrontendDNS --> CloudFront --> FrontendS3
+    User --> FrontendDNS --> FrontendHosting
     User --> APIDNS --> API
-    API --> Providers
     API --> Dependencies
 ```
 
@@ -65,8 +63,8 @@ flowchart TB
           EC2[ARM64 EC2 host\nIMDSv2 required\nSSM managed]
           RootEBS[Encrypted root EBS\nDisposable]
           DataEBS[Encrypted data EBS\nLifecycle controlled]
-          Caddy[Caddy\n80/443]
-          Backend[Backend container\n127.0.0.1:9292]
+          Edge[Consumer-supplied HTTP/HTTPS edge\n80/443]
+          Backend[Consumer application service\nPrivate Compose network]
           Dependencies[Optional internal services\nConsumer-defined]
         end
       end
@@ -82,19 +80,21 @@ flowchart TB
     SG --> EIP --> EC2
     EC2 --- RootEBS
     EC2 --- DataEBS
-    EC2 --> Caddy
-    Caddy --> Backend
+    EC2 --> Edge
+    Edge --> Backend
     Backend --> Dependencies
     RouteTable --> S3Endpoint --> Artifacts
     EC2 --> SSM
     SSM --> KMS
-    Backend -->|AI provider and search egress| Internet
+    Backend -->|Configured dependency egress| Internet
 ```
 
 ### Network invariants
 
 - The security group exposes only 80 and 443.
-- Docker publishes the backend listener to `127.0.0.1:9292` only.
+- The edge proxy reaches the application through the private Compose network
+  or a consumer-selected loopback listener; the application is not directly
+  exposed on a public host port.
 - Consumer-defined dependent services use Compose `expose`, not host-published
   ports.
 - The Internet Gateway is required for outbound provider and tool access.
@@ -110,21 +110,18 @@ sequenceDiagram
     participant Browser
     participant DNS as Route 53
     participant EIP as Elastic IP
-    participant Caddy
+    participant Edge as HTTP/HTTPS edge
     participant App as Backend container
     participant Dependencies
-    participant AI as AI provider
 
     Browser->>DNS: Resolve api.<domain>
     DNS-->>Browser: EIP address
-    Browser->>Caddy: HTTPS request on 443
-    Caddy->>App: Reverse proxy to backend:9292
+    Browser->>Edge: HTTPS request on 443
+    Edge->>App: Reverse proxy to the private application listener
     App->>Dependencies: Read or call configured services
     Dependencies-->>App: Service response
-    App->>AI: Prompt plus permitted context
-    AI-->>App: Generated response
-    App-->>Caddy: JSON or health response
-    Caddy-->>Browser: HTTPS response
+    App-->>Edge: JSON or health response
+    Edge-->>Browser: HTTPS response
 ```
 
 The exact application endpoints belong to the consuming application. The
@@ -136,23 +133,22 @@ internal service reachability.
 ```mermaid
 flowchart LR
     Browser[Browser SPA]
-    CF[CloudFront distribution]
-    S3[Frontend S3 origin]
+    FrontendHosting[Consumer-owned frontend hosting]
     APIHost[api.<domain>]
-    Caddy[Caddy TLS edge]
-    Cable[Action Cable or WebSocket endpoint]
+    Edge[HTTP/HTTPS edge]
+    WebSocket[Optional WebSocket endpoint]
     App[Backend application]
 
-    Browser -->|HTML, JS, CSS| CF --> S3
-    Browser -->|REST API| APIHost --> Caddy --> App
-    Browser -->|WebSocket upgrade| APIHost --> Caddy --> Cable --> App
+    Browser -->|HTML, JS, CSS| FrontendHosting
+    Browser -->|REST API| APIHost --> Edge --> App
+    Browser -->|Optional WebSocket upgrade| APIHost --> Edge --> WebSocket --> App
 ```
 
-CloudFront is a separate frontend concern. Frontend IaC owns the CloudFront
-distribution, frontend S3 origin, `app.<domain>` DNS alias, and us-east-1 ACM
-certificate. Backend IaC owns only the API-side DNS record and backend
-resources. `API_BASE_URL` is an optional configuration handoff from frontend
-deployment to the SPA, not a DNS or provisioning dependency.
+Frontend hosting is a separate consumer concern. The consumer owns its
+frontend hosting resources, DNS/TLS integration, and deployment command.
+Backend IaC owns only the API-side DNS record and backend resources.
+`API_BASE_URL` is an optional configuration handoff from frontend deployment to
+the frontend application, not a DNS or provisioning dependency.
 
 ## Release and activation flow
 
@@ -310,11 +306,12 @@ The following current files are the main implementation surfaces:
 - The remaining `.github/workflows/*.yml` files provide reusable infrastructure
   delivery entry points for consumer repositories.
 
-Frontend consumers separately own the concrete frontend S3 bucket, CloudFront
-distribution, frontend ACM certificate, and `app.<domain>` alias. This
-repository provides reusable frontend infrastructure delivery workflows for
-those consumer-owned resources. A shared DNS foundation owns the hosted zone
-and registrar delegation; neither application stack should recreate that zone.
+Frontend consumers separately own their concrete frontend hosting resources,
+DNS/TLS integration, and deployment commands. This repository provides
+reusable frontend delivery workflows without requiring a specific hosting
+provider, frontend framework, domain name, or resource layout. A shared DNS
+foundation may own the hosted zone and registrar delegation; neither
+application stack should recreate a shared zone.
 
 Application identity, hostnames, tags, SSM paths, Compose services, release
 manifest shape, and GitHub OIDC policy scope are parameterized at the reusable
