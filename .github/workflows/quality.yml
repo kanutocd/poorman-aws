@@ -19,10 +19,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up OpenTofu
-        uses: opentofu/setup-opentofu@v2
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4
 
       - name: Check OpenTofu formatting
         run: tofu fmt -check -recursive backend
@@ -46,7 +46,9 @@ jobs:
           done
 
       - name: Check policy contract
-        run: bash tests/policy_contract_test.sh
+        run: |
+          bash tests/workflow_action_pin_test.sh
+          bash tests/policy_contract_test.sh
 
       - name: Check rendered deployment policies
         run: bash tests/deployment_policy_test.sh
@@ -63,10 +65,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Packer
-        uses: hashicorp/setup-packer@v3
+        uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789
 
       - name: Initialize Packer plugins
         working-directory: backend/packer
@@ -86,7 +88,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Validate Compose configuration
         env:
@@ -106,7 +108,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install ShellCheck
         run: |
@@ -125,7 +127,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Run actionlint
         run: |
@@ -140,7 +142,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Check generated artifacts and secrets
         run: bash bin/quality-hygiene

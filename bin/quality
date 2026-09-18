@@ -37,6 +37,7 @@ for module_path in backend/modules/compute backend/modules/deployment-artifacts 
 done
 
 echo "Checking policy contract"
+bash tests/workflow_action_pin_test.sh
 bash tests/policy_contract_test.sh
 bash tests/deployment_policy_test.sh
 bash tests/bootstrap_backend_parameters_test.sh

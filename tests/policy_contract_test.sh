@@ -56,5 +56,7 @@ assert_contains 'Production must keep data-volume backups enabled.' "$backend_ro
 assert_contains 'printf '\''SecureString'\''' "$project_root/bin/bootstrap-backend-parameters"
 assert_contains '--non-secret' "$project_root/bin/bootstrap-backend-parameters"
 assert_contains 'backend/modules/compute' "$project_root/bin/quality"
+assert_contains 'docs/quality.md' "$project_root/README.md"
+assert_contains 'docs/change-management.md' "$project_root/README.md"
 
 echo "Policy contract checks passed"
