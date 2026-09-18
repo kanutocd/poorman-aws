@@ -51,6 +51,12 @@ jobs:
       - name: Check rendered deployment policies
         run: bash tests/deployment_policy_test.sh
 
+      - name: Check backend parameter handling
+        run: bash tests/bootstrap_backend_parameters_test.sh
+
+      - name: Check runtime secret rendering
+        run: bash tests/runtime_secret_handling_test.sh
+
   packer:
     name: Packer
     runs-on: ubuntu-latest
