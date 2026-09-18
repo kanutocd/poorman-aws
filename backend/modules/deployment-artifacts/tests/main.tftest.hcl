@@ -34,4 +34,14 @@ run "creates_private_versioned_artifact_bucket" {
     condition     = aws_s3_bucket_versioning.this.versioning_configuration[0].status == "Enabled"
     error_message = "Artifact buckets must enable versioning."
   }
+
+  assert {
+    condition     = aws_s3_bucket_lifecycle_configuration.this.rule[0].expiration[0].days == 30
+    error_message = "Current release objects must expire after the 30-day rollback window."
+  }
+
+  assert {
+    condition     = aws_s3_bucket_lifecycle_configuration.this.rule[0].noncurrent_version_expiration[0].noncurrent_days == 30
+    error_message = "Noncurrent release versions must expire after 30 days."
+  }
 }
