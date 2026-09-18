@@ -1,4 +1,4 @@
-# poorman-aws Architecture
+# Architecture
 
 ## Status and scope
 
@@ -10,6 +10,10 @@ The design optimizes for a small, low-traffic production deployment with a
 strong preference for predictable fixed costs and simple operations. It trades
 multi-AZ availability, managed scaling, and managed ingress for a single public
 EC2 host, an Internet Gateway, and explicit operational guardrails.
+
+The architecture is a baseline, not a required application topology. Consumers
+choose their Compose services and frontend hosting implementation while keeping
+the public ingress, loopback listener, secret, and lifecycle boundaries below.
 
 ## System context
 

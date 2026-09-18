@@ -1,0 +1,66 @@
+# Quality checks
+
+Run repository quality checks from the repository root:
+
+```bash
+bash bin/quality
+actionlint .github/workflows/*.yml
+```
+
+The quality command performs backend-disabled OpenTofu initialization,
+validation, plan-only module tests, policy and secret-handling tests, Docker
+Compose validation, Packer formatting/validation, Bash syntax checks,
+ShellCheck, and repository hygiene checks. It never runs a real OpenTofu
+apply, destroy, or cloud-backed integration test.
+
+The GitHub Pages workflow runs the same documentation build command used
+locally: `bin/docs build --strict`. It does not need AWS credentials.
+
+## Local prerequisites
+
+Install these tools before running the local command:
+
+- OpenTofu;
+- Packer;
+- Docker with the Compose plugin;
+- Bash and ShellCheck;
+- actionlint for workflow validation.
+
+Use native OpenTofu and Packer installations or the same tool setup used by
+CI. Snap-constrained OpenTofu installations may fail when invoked from nested
+quality scripts even when a direct command succeeds; use a native installation
+or run the OpenTofu job in GitHub Actions if that confinement cannot be
+changed. Packer plugin initialization also requires registry/network access.
+
+The OpenTofu module tests use mocked providers and `command = plan`; they must
+not be changed to create AWS resources in pull-request quality checks.
+
+## Documentation site
+
+Install the pinned documentation dependencies from the repository root, then
+build or preview the site through the shared entry point:
+
+```bash
+python3 -m venv .venv-docs
+.venv-docs/bin/python -m pip install --requirement requirements-docs.txt
+bin/docs build --strict
+bin/docs serve
+```
+
+`bin/docs build` writes generated output to `site/`. Do not commit that
+directory. The GitHub Pages workflow invokes the same `bin/docs build --strict`
+command and publishes the resulting directory.
+
+When the optional documentation linters are installed, run them from the
+repository root:
+
+```bash
+vale docs/mkdocs README.md CHANGELOG.md
+markdownlint-cli2 "**/*.md"
+lychee --offline "docs/mkdocs/**/*.md"
+```
+
+The offline Lychee mode checks local links without making external network
+requests. A documentation build can still succeed while a network-backed link
+is unavailable; treat that as a link-check result, not an infrastructure
+failure.
