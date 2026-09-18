@@ -20,11 +20,25 @@ defaults:
   root_volume_size_gib: 16
 YAML
 
+mkdir -p "$temporary_dir/backend"
+touch "$temporary_dir/backend/Dockerfile" "$temporary_dir/backend/Caddyfile"
+cat >"$temporary_dir/backend/compose.production.yaml" <<'YAML'
+services:
+  backend:
+    build: .
+  worker:
+    image: example/worker:check
+YAML
+
 pushd "$temporary_dir" >/dev/null
 output="$("$wrapper" config show)"
 grep -Fq 'application_name                     fixture-app (source: config:.poorman-aws.yml)' <<<"$output"
 grep -Fq 'aws.region                           us-east-2 (source: config:.poorman-aws.yml)' <<<"$output"
 grep -Fq 'defaults.data_volume_size_gib        20 (source: default)' <<<"$output"
+
+doctor_output="$("$wrapper" --offline doctor)"
+grep -Fq 'ok: Compose file' <<<"$doctor_output"
+grep -Fq 'info: offline mode skips AWS and GitHub checks' <<<"$doctor_output"
 
 override="$("$wrapper" --aws-region eu-west-1 --instance-type t4g.nano config show)"
 grep -Fq 'aws.region                           eu-west-1 (source: cli)' <<<"$override"
@@ -40,6 +54,20 @@ if "$wrapper" --config "$temporary_dir/missing.yml" config validate >/dev/null 2
   exit 1
 fi
 popd >/dev/null
+
+mkdir -p "$temporary_dir/detected/deployment/backend" "$temporary_dir/detected/backend"
+touch "$temporary_dir/detected/deployment/backend/compose.production.yaml"
+touch "$temporary_dir/detected/deployment/backend/Caddyfile"
+touch "$temporary_dir/detected/backend/Dockerfile"
+cat >"$temporary_dir/detected/.poorman-aws.yml" <<'YAML'
+version: 1
+aws:
+  state_bucket: detected-state
+YAML
+detected_stderr="$temporary_dir/detected.stderr"
+(cd "$temporary_dir/detected" && "$wrapper" --offline doctor >/dev/null 2>"$detected_stderr")
+grep -Fq 'detected Compose file' "$detected_stderr"
+grep -Fq 'detected Caddyfile' "$detected_stderr"
 
 cat >"$temporary_dir/invalid.yml" <<'YAML'
 version: 1

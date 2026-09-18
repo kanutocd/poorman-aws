@@ -1,0 +1,26 @@
+# Generic consumer starting point.
+#
+# Caddy is the public HTTPS boundary: with a public DNS name and ACME email it
+# obtains and renews the certificate automatically, terminates TLS, and
+# reverse-proxies ordinary HTTP traffic to the application on the private
+# Compose network. The application does not need to implement public TLS.
+#
+# Adapt the hostname, upstream service name, and port to the consumer's
+# application runtime. This example does not prescribe a Compose topology.
+{
+  email {$ACME_EMAIL}
+}
+
+{$APPLICATION_API_HOSTNAME} {
+  request_body {
+    max_size 2MB
+  }
+
+  encode gzip
+  reverse_proxy application:3000 {
+    transport http {
+      dial_timeout 5s
+      response_header_timeout 120s
+    }
+  }
+}

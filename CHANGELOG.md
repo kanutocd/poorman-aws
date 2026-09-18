@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Consumer wrapper
 
+- Expanded `poorman-aws doctor` with non-mutating prerequisite checks,
+  selectable AWS/GitHub/Docker/OpenTofu/Packer checks, consumer file
+  inspection, actionable remediation hints, and offline mode. The inspection
+  is topology-neutral and does not assume SearXNG or any other Compose
+  service.
+- Added a generic Caddy reverse-proxy example that consumers can adapt to
+  their own application service name and port. Documented its value as an
+  optional HTTPS boundary with automatic ACME certificate management, TLS
+  termination, and private HTTP proxying to the application.
+- Added consumer fixture coverage for repository layout inspection and
+  offline doctor behavior.
 - Added the Phase 0 `bin/poorman-aws` contract wrapper with strict Bash
   argument handling, YAML configuration discovery, explicit `--config`
   support, command-line-over-configuration precedence, redacted effective

@@ -10,6 +10,12 @@ config_explicit=false
 json_output=false
 non_interactive=false
 dry_run=false
+offline=false
+check_aws=false
+check_docker=false
+check_infra=false
+check_ami=false
+check_github=false
 command_name=''
 command_args=()
 
@@ -20,7 +26,7 @@ Usage: poorman-aws [global options] COMMAND [command options]
 Commands:
   config validate       Validate effective configuration.
   config show           Show effective redacted configuration.
-  doctor                Check Phase 0 prerequisites and repository layout.
+  doctor                Check prerequisites and the consumer repository contract.
   onboard               Validate configuration and show effective values.
   parameters|ami build  Reserved for later operational adapters.
   plan|apply             Reserved for later infrastructure adapters.
@@ -32,6 +38,12 @@ Global options:
   --non-interactive     Refuse prompts.
   --json                Emit machine-readable output where supported.
   --dry-run             Never mutate files or call mutating operations.
+  --offline             Skip AWS and GitHub checks.
+  --aws                 Check AWS CLI identity and configured region.
+  --docker              Check Docker Compose and the consumer Compose file.
+  --infra               Check OpenTofu and infrastructure prerequisites.
+  --ami                 Check Packer and AMI-build prerequisites.
+  --github              Check GitHub CLI authentication.
   --help, --version
 
 Precedence: built-in defaults < YAML configuration < command-line options.
@@ -183,6 +195,12 @@ parse_args() {
       --non-interactive) non_interactive=true; shift; continue ;;
       --json) json_output=true; shift; continue ;;
       --dry-run) dry_run=true; shift; continue ;;
+      --offline) offline=true; shift; continue ;;
+      --aws) check_aws=true; shift; continue ;;
+      --docker) check_docker=true; shift; continue ;;
+      --infra) check_infra=true; shift; continue ;;
+      --ami) check_ami=true; shift; continue ;;
+      --github) check_github=true; shift; continue ;;
       --application-name) key=application_name ;;
       --infrastructure-repository) key=infrastructure_repository ;;
       --infrastructure-ref) key=infrastructure_ref ;;
@@ -245,20 +263,165 @@ show_config() {
   fi
 }
 
-doctor() {
-  local missing=0 command_name
-  for command_name in bash curl jq python3; do
-    if command -v "$command_name" >/dev/null 2>&1; then echo "ok: $command_name"; else echo "missing: $command_name" >&2; missing=1; fi
+doctor_failure=0
+
+doctor_fail() {
+  echo "missing: $1" >&2
+  echo "hint: $2" >&2
+  doctor_failure=1
+}
+
+doctor_command() {
+  local name="$1" hint="$2"
+  if command -v "$name" >/dev/null 2>&1; then
+    echo "ok: $name ($(command -v "$name"))"
+  else
+    doctor_fail "$name" "$hint"
+  fi
+}
+
+consumer_path() {
+  local configured_path="$1"
+  if [[ "$configured_path" == /* ]]; then
+    printf '%s\n' "$configured_path"
+  else
+    printf '%s/%s\n' "$PWD" "$configured_path"
+  fi
+}
+
+doctor_file() {
+  local label="$1" path="$2" hint="$3"
+  if [[ -f "$path" ]]; then
+    echo "ok: $label ($path)"
+  else
+    doctor_fail "$label ($path)" "$hint"
+  fi
+}
+
+doctor_directory() {
+  local label="$1" path="$2" hint="$3"
+  if [[ -d "$path" ]]; then
+    echo "ok: $label ($path)"
+  else
+    doctor_fail "$label ($path)" "$hint"
+  fi
+}
+
+doctor_resolve_file() {
+  local label="$1" option="$2" configured="$3" candidate
+  shift 3
+  if [[ -f "$configured" ]]; then
+    printf '%s\n' "$configured"
+    return
+  fi
+  for candidate in "$@"; do
+    if [[ -f "$PWD/$candidate" ]]; then
+      echo "hint: detected $label at $PWD/$candidate; use --$option to make this explicit" >&2
+      printf '%s\n' "$PWD/$candidate"
+      return
+    fi
   done
+  printf '%s\n' "$configured"
+}
+
+doctor_consumer_contract() {
+  local compose_file caddy_file dockerfile build_context
+  compose_file="$(doctor_resolve_file 'Compose file' compose-file "$(consumer_path "${values[backend.compose_file]}")" \
+    deployment/backend/compose.production.yaml backend/compose.production.yaml compose.yaml)"
+  caddy_file="$(doctor_resolve_file Caddyfile caddy-file "$(consumer_path "${values[backend.caddy_file]}")" \
+    deployment/backend/Caddyfile backend/Caddyfile Caddyfile)"
+  dockerfile="$(doctor_resolve_file Dockerfile dockerfile "$(consumer_path "${values[backend.dockerfile]}")" \
+    backend/Dockerfile Dockerfile)"
+  build_context="$(consumer_path "${values[backend.build_context]}")"
+  doctor_file 'Compose file' "$compose_file" \
+    'set backend.compose_file to the consumer-owned Compose path'
+  doctor_file 'Caddyfile' "$caddy_file" \
+    'set backend.caddy_file to the consumer-owned reverse-proxy configuration'
+  doctor_file 'Dockerfile' "$dockerfile" \
+    'set backend.dockerfile to the application image Dockerfile'
+  doctor_directory 'Docker build context' "$build_context" \
+    'set backend.build_context to the application image build directory'
+
+  if [[ -z "${values[aws.state_bucket]-}" ]]; then
+    doctor_fail 'aws.state_bucket' \
+      'set the encrypted remote OpenTofu state bucket in YAML or with --state-bucket'
+  else
+    echo "ok: aws.state_bucket (${values[aws.state_bucket]})"
+  fi
+}
+
+doctor_docker() {
+  local compose_file
+  doctor_command docker 'install Docker Desktop or Docker Engine with Compose v2'
+  if ! command -v docker >/dev/null 2>&1; then return; fi
+  if docker compose version >/dev/null 2>&1; then
+    echo "ok: docker compose ($(docker compose version --short 2>/dev/null || echo available))"
+  else
+    doctor_fail 'docker compose' 'install or enable the Docker Compose v2 plugin'
+    return
+  fi
+  compose_file="$(consumer_path "${values[backend.compose_file]}")"
+  if [[ -f "$compose_file" ]] && docker compose -f "$compose_file" config --quiet >/dev/null 2>&1; then
+    echo "ok: Compose configuration parses ($compose_file)"
+  elif [[ -f "$compose_file" ]]; then
+    doctor_fail 'Compose configuration' \
+      'run docker compose config with the consumer runtime environment and fix interpolation or syntax errors'
+  fi
+}
+
+doctor_aws() {
+  local identity account
+  doctor_command aws 'install AWS CLI v2 and configure an allowed identity'
+  if ! command -v aws >/dev/null 2>&1; then return; fi
+  identity="$(aws sts get-caller-identity --region "${values[aws.region]}" --output json 2>/dev/null || true)"
+  account="$(jq -r '.Account // empty' <<<"$identity" 2>/dev/null || true)"
+  if [[ "$account" =~ ^[0-9]{12}$ ]]; then
+    echo "ok: AWS identity (account $account, region ${values[aws.region]})"
+  else
+    doctor_fail 'AWS identity' \
+      'authenticate AWS CLI with an identity permitted to inspect the configured environment'
+  fi
+}
+
+doctor_github() {
+  doctor_command gh 'install GitHub CLI and run gh auth login'
+  if ! command -v gh >/dev/null 2>&1; then return; fi
+  if gh auth status >/dev/null 2>&1; then
+    echo 'ok: GitHub CLI authentication'
+  else
+    doctor_fail 'GitHub CLI authentication' 'run gh auth login with a token allowed to manage the requested repository'
+  fi
+}
+
+doctor() {
+  doctor_failure=0
+  doctor_command bash 'install Bash 4+ (or use the supported system package)'
+  doctor_command curl 'install curl for remote wrapper and AWS endpoint checks'
+  doctor_command jq 'install jq for structured AWS and policy output'
+  doctor_command git 'install Git and run this command from the consumer repository'
   if (command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1) ||
      (command -v ruby >/dev/null 2>&1 && ruby -e 'require "yaml"' >/dev/null 2>&1); then
     echo 'ok: YAML parser (Python PyYAML or Ruby Psych)'
   else
-    echo 'missing: YAML parser (Python PyYAML or Ruby Psych)' >&2
-    missing=1
+    doctor_fail 'YAML parser' 'install Python 3 with PyYAML or Ruby with Psych'
   fi
-  [[ -d .git ]] && echo 'ok: Git repository' || { echo 'missing: Git repository' >&2; missing=1; }
-  return "$missing"
+  doctor_consumer_contract
+
+  if [[ "$offline" != true ]]; then
+    if [[ "$check_aws" == true ]]; then doctor_aws; fi
+    if [[ "$check_github" == true ]]; then doctor_github; fi
+  else
+    echo 'info: offline mode skips AWS and GitHub checks'
+  fi
+  if [[ "$check_docker" == true ]]; then doctor_docker; fi
+  if [[ "$check_infra" == true ]]; then
+    doctor_command tofu 'install OpenTofu for infrastructure planning'
+  fi
+  if [[ "$check_ami" == true ]]; then
+    doctor_command packer 'install Packer for reviewed host AMI builds'
+    doctor_command zstd 'install zstd for release and AMI artifact compression'
+  fi
+  [[ "$doctor_failure" -eq 0 ]]
 }
 
 reserved_command() {

@@ -217,6 +217,19 @@ From a clone:
 ./bin/poorman-aws config validate --config .poorman-aws.yml
 ```
 
+Use `doctor --offline` for local-only checks. Add `--aws`, `--docker`,
+`--infra`, `--ami`, or `--github` to check the corresponding external or
+toolchain prerequisites. The doctor inspects the consumer-owned Compose file,
+Caddyfile, Dockerfile, and build context without assuming service names or
+topology. It prints remediation hints without mutating AWS or repository
+files. A generic reverse-proxy starting point is available at
+[`examples/Caddyfile.example`](examples/Caddyfile.example); consumers can
+adapt its hostname, upstream service name, and port. It is suggested because
+Caddy provides a useful working HTTPS boundary: it obtains and renews ACME
+certificates, terminates public TLS, and proxies HTTP to the consumer's
+private application service, so the application does not need to implement
+public certificate management itself.
+
 From an immutable release reference:
 
 ```bash
