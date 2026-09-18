@@ -276,48 +276,110 @@ write_deployment_policy() {
       "Resource": ["${artifact_bucket_arn}", "${artifact_bucket_arn}/*"]
     },
     {
-      "Sid": "ManageEnvironmentCompute",
+      "Sid": "DescribeEnvironmentCompute",
       "Effect": "Allow",
       "Action": [
-        "ec2:AllocateAddress", "ec2:AssociateAddress", "ec2:AssociateRouteTable",
-        "ec2:AttachInternetGateway", "ec2:AttachVolume",
-        "ec2:AuthorizeSecurityGroupEgress", "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:CreateInternetGateway", "ec2:CreateRoute", "ec2:CreateRouteTable",
-        "ec2:CreateSecurityGroup", "ec2:CreateSubnet", "ec2:CreateTags",
-        "ec2:CreateVolume", "ec2:CreateVpc", "ec2:CreateVpcEndpoint",
-        "ec2:DeleteInternetGateway", "ec2:DeleteRoute", "ec2:DeleteRouteTable",
-        "ec2:DeleteSecurityGroup", "ec2:DeleteSubnet", "ec2:DeleteTags",
-        "ec2:DeleteVolume", "ec2:DeleteVpc", "ec2:DeleteVpcEndpoints",
         "ec2:DescribeAddresses", "ec2:DescribeAvailabilityZones", "ec2:DescribeImages",
         "ec2:DescribeInstanceAttribute", "ec2:DescribeInstances", "ec2:DescribeInternetGateways",
         "ec2:DescribeRouteTables", "ec2:DescribeSecurityGroups", "ec2:DescribeSubnets",
         "ec2:DescribeTags", "ec2:DescribeVolumes", "ec2:DescribeVpcAttribute",
-        "ec2:DescribeVpcEndpoints", "ec2:DescribeVpcs", "ec2:DetachInternetGateway",
-        "ec2:DetachVolume", "ec2:DisassociateAddress", "ec2:DisassociateRouteTable",
-        "ec2:ModifyInstanceAttribute", "ec2:ModifyInstanceMetadataOptions",
-        "ec2:ModifySubnetAttribute", "ec2:ModifyVolume", "ec2:ModifyVpcAttribute",
-        "ec2:ReleaseAddress", "ec2:ReplaceRoute", "ec2:RevokeSecurityGroupEgress",
-        "ec2:RevokeSecurityGroupIngress", "ec2:RunInstances", "ec2:StopInstances",
-        "ec2:StartInstances", "ec2:TerminateInstances"
+        "ec2:DescribeVpcEndpoints", "ec2:DescribeVpcs"
       ],
       "Resource": "*",
       "Condition": {"StringEquals": {"aws:RequestedRegion": "${region}"}}
     },
     {
+      "Sid": "ProvisionEnvironmentCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AllocateAddress", "ec2:CreateInternetGateway", "ec2:CreateRouteTable",
+        "ec2:CreateSecurityGroup", "ec2:CreateSubnet",
+        "ec2:CreateVolume", "ec2:CreateVpc", "ec2:CreateVpcEndpoint",
+        "ec2:RunInstances"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${region}",
+          "aws:RequestTag/Application": "${application_name}",
+          "aws:RequestTag/Environment": "${environment}",
+          "aws:RequestTag/ManagedBy": "opentofu",
+          "aws:RequestTag/Component": "backend"
+        }
+      }
+    },
+    {
+      "Sid": "OperateEnvironmentCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AssociateAddress", "ec2:AssociateRouteTable", "ec2:AttachInternetGateway",
+        "ec2:AttachVolume", "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress", "ec2:CreateRoute", "ec2:CreateTags",
+        "ec2:DetachInternetGateway", "ec2:DetachVolume", "ec2:DisassociateAddress",
+        "ec2:DisassociateRouteTable",
+        "ec2:ModifyInstanceAttribute", "ec2:ModifyInstanceMetadataOptions",
+        "ec2:ModifySubnetAttribute", "ec2:ModifyVolume", "ec2:ModifyVpcAttribute",
+        "ec2:ReplaceRoute", "ec2:RevokeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress", "ec2:StartInstances", "ec2:StopInstances"
+      ],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "${region}"}}
+    },
+    {
+      "Sid": "DestroyTaggedEnvironmentCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteInternetGateway", "ec2:DeleteRoute", "ec2:DeleteRouteTable",
+        "ec2:DeleteSecurityGroup", "ec2:DeleteSubnet", "ec2:DeleteTags",
+        "ec2:DeleteVolume", "ec2:DeleteVpc", "ec2:DeleteVpcEndpoints",
+        "ec2:ReleaseAddress", "ec2:TerminateInstances"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${region}",
+          "ec2:ResourceTag/Application": "${application_name}",
+          "ec2:ResourceTag/Environment": "${environment}",
+          "ec2:ResourceTag/ManagedBy": "opentofu",
+          "ec2:ResourceTag/Component": "backend"
+        }
+      }
+    },
+    {
+      "Sid": "CreateEnvironmentIam",
+      "Effect": "Allow",
+      "Action": ["iam:CreateInstanceProfile", "iam:CreateRole"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Application": "${application_name}",
+          "aws:RequestTag/Environment": "${environment}",
+          "aws:RequestTag/ManagedBy": "opentofu",
+          "aws:RequestTag/Component": "backend"
+        }
+      }
+    },
+    {
       "Sid": "ManageEnvironmentIam",
       "Effect": "Allow",
       "Action": [
-        "iam:AddRoleToInstanceProfile", "iam:CreateInstanceProfile",
-        "iam:CreateRole", "iam:DeleteInstanceProfile", "iam:DeleteRole",
+        "iam:AddRoleToInstanceProfile", "iam:DeleteInstanceProfile", "iam:DeleteRole",
         "iam:DeleteRolePolicy", "iam:GetInstanceProfile", "iam:GetRole",
         "iam:GetRolePolicy", "iam:ListInstanceProfilesForRole",
         "iam:ListAttachedRolePolicies", "iam:ListRolePolicies",
-        "iam:PassRole", "iam:PutRolePolicy",
+        "iam:PutRolePolicy",
         "iam:RemoveRoleFromInstanceProfile", "iam:TagInstanceProfile",
         "iam:TagRole", "iam:UntagInstanceProfile", "iam:UntagRole"
       ],
       "Resource": ["${backend_role_arn}", "${backend_profile_arn}"],
-      "Condition": {"StringEqualsIfExists": {"iam:PassedToService": "ec2.amazonaws.com"}}
+      "Condition": {"StringEquals": {"aws:ResourceTag/Application": "${application_name}"}}
+    },
+    {
+      "Sid": "PassEnvironmentBackendRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "${backend_role_arn}",
+      "Condition": {"StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}}
     },
     {
       "Sid": "ManageEnvironmentDns",
@@ -660,7 +722,7 @@ for environment in "${environments[@]}"; do
       --role-name "$role_name" \
       --description "${application_name} GitHub Actions ${environment} deployment role" \
       --assume-role-policy-document "file://${trust_policy}" \
-      --tags Key=Application,Value="${application_name}" Key=Environment,Value="${environment}" Key=ManagedBy,Value=bootstrap-github-oidc \
+      --tags Key=Application,Value="${application_name}" Key=Environment,Value="${environment}" Key=ManagedBy,Value=bootstrap-github-oidc Key=Component,Value=backend \
       >/dev/null
     printf 'Created role: %s\n' "$role_name"
   fi
