@@ -102,6 +102,36 @@ variable "allow_destructive_destroy" {
   }
 }
 
+variable "release_retention_days" {
+  description = "Number of days to retain current immutable release objects."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.release_retention_days >= 1
+    error_message = "release_retention_days must be at least 1 day."
+  }
+}
+
+variable "enable_data_volume_backups" {
+  description = "Enable the approved production EBS backup plan for the retained data volume."
+  type        = bool
+  default     = true
+}
+
+variable "backup_kms_key_arn" {
+  description = "Optional KMS key ARN for the production AWS Backup vault."
+  type        = string
+  default     = null
+
+  validation {
+    condition = var.backup_kms_key_arn == null || trimspace(var.backup_kms_key_arn) == "" || can(
+      regex("^arn:[^:]+:kms:[^:]+:[^:]+:key/.+$", trimspace(var.backup_kms_key_arn))
+    )
+    error_message = "backup_kms_key_arn must be a KMS key ARN when provided."
+  }
+}
+
 variable "artifact_bucket_name" {
   description = "Optional globally unique name for the private deployment bucket."
   type        = string

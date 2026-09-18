@@ -19,6 +19,13 @@ output "data_volume_id" {
   ) : aws_ebs_volume.disposable_data[0].id
 }
 
+output "data_volume_arn" {
+  description = "ARN of the attached data EBS volume."
+  value = var.retain_data_volume ? (
+    aws_ebs_volume.retained_data[0].arn
+  ) : aws_ebs_volume.disposable_data[0].arn
+}
+
 output "instance_role_arn" {
   value = aws_iam_role.instance.arn
 }

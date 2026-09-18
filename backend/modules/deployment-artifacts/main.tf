@@ -58,6 +58,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
       noncurrent_days = 30
     }
 
+    expiration {
+      days = var.release_retention_days
+    }
+
     abort_incomplete_multipart_upload {
       days_after_initiation = 1
     }
