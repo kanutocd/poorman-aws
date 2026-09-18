@@ -48,6 +48,9 @@ jobs:
       - name: Check policy contract
         run: bash tests/policy_contract_test.sh
 
+      - name: Check rendered deployment policies
+        run: bash tests/deployment_policy_test.sh
+
   packer:
     name: Packer
     runs-on: ubuntu-latest

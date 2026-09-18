@@ -38,6 +38,7 @@ done
 
 echo "Checking policy contract"
 bash tests/policy_contract_test.sh
+bash tests/deployment_policy_test.sh
 
 echo "Checking Docker Compose configuration"
 runtime_env_path="backend/runtime.env"
