@@ -1,0 +1,7 @@
+exclude = [
+  "^https://api\\.example\\.test",
+  "^https://example\\.test",
+  "^https://github\\.com/CONSUMER_OWNER/CONSUMER_REPOSITORY"
+]
+exclude_path = [".ignoreme", ".venv-docs", "site"]
+offline = true

@@ -15,3 +15,7 @@
 coverage/
 vendor/
 .DS_Store
+
+/.ignoreme/
+/.venv-docs/
+/site/

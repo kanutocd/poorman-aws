@@ -1,0 +1,84 @@
+site_name: poorman-aws
+site_description: Cost-conscious AWS infrastructure building blocks for small production deployments.
+site_url: https://kanutocd.github.io/poorman-aws/
+repo_url: https://github.com/kanutocd/poorman-aws
+repo_name: kanutocd/poorman-aws
+edit_uri: edit/main/docs/mkdocs/
+docs_dir: docs/mkdocs
+site_dir: site
+exclude_docs: |
+  generic-frontend-adapters-implementation-plan.md
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.action.edit
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Choose a deployment shape: getting-started/choose-a-deployment-shape.md
+      - Prerequisites: getting-started/prerequisites.md
+      - First deployment: getting-started/first-deployment.md
+  - Concepts:
+      - Architecture: architecture.md
+      - Security model: concepts/security-model.md
+      - Cost model: concepts/cost-model.md
+      - Consumer boundary: concepts/consumer-boundary.md
+  - How-to guides:
+      - Configure GitHub environments: how-to/configure-github-environments.md
+      - Release and rollback: how-to/release-and-rollback.md
+      - Recover production: recovery.md
+      - Build an AMI: how-to/build-an-ami.md
+  - Reference:
+      - Wrapper CLI: reference/wrapper-cli.md
+      - Reusable workflows: reference/reusable-workflows.md
+      - Backend workflows: reference/backend-workflows.md
+      - Frontend workflows: reference/frontend-workflows.md
+      - Operational workflows: reference/operational-workflows.md
+      - Quality checks: quality.md
+      - Change management: change-management.md
+  - Contributing:
+      - Documentation: contributing/documentation.md
+  - Changelog: changelog.md
+
+extra:
+  generator: false
+
+plugins:
+  - search
+
+copyright: Copyright © poorman-aws contributors

@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repository_root="$(cd -- "${script_directory}/.." && pwd)"
+site_directory="${repository_root}/site"
+docs_command=""
+
+usage() {
+  cat <<'EOF'
+Usage: bin/docs <command> [options]
+
+Commands:
+  build [--strict]  Build the documentation site into site/
+  serve             Serve a local documentation preview
+  clean             Remove generated documentation output
+EOF
+}
+
+die() {
+  echo "bin/docs: $*" >&2
+  exit 2
+}
+
+select_builder() {
+  if [[ -x "${repository_root}/.venv-docs/bin/zensical" ]]; then
+    docs_command="${repository_root}/.venv-docs/bin/zensical"
+  elif command -v zensical >/dev/null 2>&1; then
+    docs_command="$(command -v zensical)"
+  else
+    die "zensical is required; install requirements-docs.txt in .venv-docs"
+  fi
+}
+
+require_project() {
+  [[ -f "${repository_root}/mkdocs.yml" ]] || die "mkdocs.yml is missing"
+  [[ -d "${repository_root}/docs/mkdocs" ]] || die "docs/mkdocs/ is missing"
+}
+
+build() {
+  local strict=false
+  while (($# > 0)); do
+    case "$1" in
+      --strict) strict=true ;;
+      *) die "unknown build option: $1" ;;
+    esac
+    shift
+  done
+
+  select_builder
+  require_project
+  mkdir -p "${site_directory}"
+
+  local -a options=(build --config-file "${repository_root}/mkdocs.yml")
+  if [[ "${strict}" == true ]]; then
+    options+=(--strict)
+  fi
+  "${docs_command}" "${options[@]}"
+}
+
+serve() {
+  select_builder
+  require_project
+  cd "${repository_root}"
+  exec "${docs_command}" serve --config-file "${repository_root}/mkdocs.yml"
+}
+
+clean() {
+  if [[ -d "${site_directory}" ]]; then
+    find "${site_directory}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    rmdir "${site_directory}" 2>/dev/null || true
+  fi
+}
+
+main() {
+  [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+  case "$1" in
+    build) shift; build "$@" ;;
+    serve) shift; (($# == 0)) || die "serve does not accept options"; serve ;;
+    clean) shift; (($# == 0)) || die "clean does not accept options"; clean ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; die "unknown command: $1" ;;
+  esac
+}
+
+main "$@"
