@@ -1,0 +1,105 @@
+name: Bootstrap backend parameters
+
+on:
+  workflow_call:
+    inputs:
+      infrastructure_repository:
+        description: Repository containing the reusable infrastructure
+        required: true
+        type: string
+      infrastructure_ref:
+        description: Immutable reusable infrastructure ref
+        required: true
+        type: string
+      application_name:
+        description: Application identifier
+        required: true
+        type: string
+      environment:
+        description: Runtime environment
+        required: true
+        type: string
+      apply:
+        description: Write parameters instead of previewing them
+        required: false
+        default: false
+        type: boolean
+      clear_parameter:
+        description: Optional uppercase parameter name to delete
+        required: false
+        type: string
+      aws_region:
+        description: AWS region
+        required: true
+        type: string
+      parameter_path:
+        description: SSM parameter path
+        required: true
+        type: string
+      non_secret_parameters:
+        description: Comma-separated parameter names stored as String
+        required: false
+        default: ''
+        type: string
+    secrets:
+      aws_role_arn:
+        description: IAM role allowed to manage runtime parameters
+        required: true
+      environment_parameters:
+        description: Newline-delimited NAME=VALUE runtime parameters
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  parameters:
+    name: ${{ inputs.environment }} runtime parameters
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      AWS_REGION: ${{ inputs.aws_region }}
+      ENVIRONMENT_PARAMETERS: ${{ secrets.environment_parameters }}
+    steps:
+      - name: Check out infrastructure repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ inputs.infrastructure_repository }}
+          ref: ${{ inputs.infrastructure_ref }}
+          path: poorman-aws
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-parameters-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Bootstrap protected parameters
+        env:
+          APPLICATION_NAME: ${{ inputs.application_name }}
+          PARAMETER_PATH: ${{ inputs.parameter_path }}
+          NON_SECRET_PARAMETERS: ${{ inputs.non_secret_parameters }}
+          APPLY_PARAMETERS: ${{ inputs.apply }}
+          CLEAR_PARAMETER: ${{ inputs.clear_parameter }}
+        run: |
+          set -euo pipefail
+          parameter_file="$RUNNER_TEMP/runtime.parameters.env"
+          printf '%s\n' "$ENVIRONMENT_PARAMETERS" >"$parameter_file"
+          arguments=(
+            --environment "${{ inputs.environment }}"
+            --application-name "$APPLICATION_NAME"
+            --parameter-path "$PARAMETER_PATH"
+          )
+          if [[ -n "$CLEAR_PARAMETER" ]]; then
+            arguments+=(--clear-parameter "$CLEAR_PARAMETER")
+          else
+            arguments+=(--from-env-file "$parameter_file")
+          fi
+          IFS=',' read -ra non_secret <<<"$NON_SECRET_PARAMETERS"
+          for parameter in "${non_secret[@]}"; do
+            [[ -n "$parameter" ]] && arguments+=(--non-secret "$parameter")
+          done
+          [[ "$APPLY_PARAMETERS" == true ]] && arguments+=(--apply)
+          bash poorman-aws/bin/bootstrap-backend-parameters "${arguments[@]}"

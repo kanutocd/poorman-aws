@@ -6,7 +6,18 @@ All notable changes to this project are documented in this file.
 
 ### Consumer wrapper
 
-- Added Phase 2 onboarding with interactive confirmation, non-interactive
+- Added operational adapters for protected infrastructure plan/apply,
+  backend release, rollback, AMI build, runtime parameter, and staging-only
+  lifecycle workflow dispatches. Mutating operations require explicit
+  confirmation phrases and all adapters support dry-run previews.
+- Exposed availability zone, Route 53, volume retention, release retention,
+  production backup, and backup KMS settings through the wrapper configuration
+  and reusable workflow inputs. Production data-volume retention and backup
+  safeguards remain enforced by OpenTofu.
+- Added a reusable secure-by-default backend parameter workflow and generic
+  supplemental release-artifact support with path validation, checksummed
+  manifests, and verified host activation.
+- Added onboarding with interactive confirmation, non-interactive
   required-value enforcement, consumer path detection, and useful defaults.
 - Added generation of non-secret `.poorman-aws.yml` configuration and thin
   reusable-workflow callers for backend infrastructure, deployment, rollback,
@@ -26,7 +37,7 @@ All notable changes to this project are documented in this file.
   termination, and private HTTP proxying to the application.
 - Added consumer fixture coverage for repository layout inspection and
   offline doctor behavior.
-- Added the Phase 0 `bin/poorman-aws` contract wrapper with strict Bash
+- Added the `bin/poorman-aws` contract wrapper with strict Bash
   argument handling, YAML configuration discovery, explicit `--config`
   support, command-line-over-configuration precedence, redacted effective
   configuration output, prerequisite checks, and reserved operational

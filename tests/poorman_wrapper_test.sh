@@ -100,11 +100,15 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
   "$wrapper" --non-interactive onboard \
     --application-name onboard-app \
     --infrastructure-ref v1.5.4 \
+    --availability-zone us-east-2a \
+    --route53-zone-name example.test \
     --state-bucket onboard-state \
     --aws-region us-east-2
   "$wrapper" --non-interactive onboard \
     --application-name onboard-app \
     --infrastructure-ref v1.5.4 \
+    --availability-zone us-east-2a \
+    --route53-zone-name example.test \
     --state-bucket onboard-state \
     --aws-region us-east-2 >/dev/null
   grep -Fq 'uses: kanutocd/poorman-aws/.github/workflows/deploy-backend.yml@v1.5.4' \
@@ -115,6 +119,8 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
   if "$wrapper" --non-interactive onboard \
     --application-name onboard-app \
     --infrastructure-ref v1.5.4 \
+    --availability-zone us-east-2a \
+    --route53-zone-name example.test \
     --state-bucket onboard-state \
     --aws-region us-east-2 >/dev/null 2>&1; then
     echo 'conflicting generated workflow was overwritten without --overwrite' >&2
@@ -129,10 +135,35 @@ touch "$temporary_dir/interactive/backend/Caddyfile"
 touch "$temporary_dir/interactive/backend/Dockerfile"
 (
   cd "$temporary_dir/interactive"
-  printf 'interactive-app\nv1.5.4\ninteractive-state\ny\n' |
+  printf 'interactive-app\nv1.5.4\nus-east-2a\nexample.test\ninteractive-state\ny\n' |
     "$wrapper" onboard >/dev/null
   grep -Fq 'application_name: interactive-app' .poorman-aws.yml
   grep -Fq 'state_bucket: interactive-state' .poorman-aws.yml
+)
+
+mkdir -p "$temporary_dir/fake-bin" "$temporary_dir/dispatch"
+cat >"$temporary_dir/fake-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_GH_LOG:?}"
+EOF
+chmod +x "$temporary_dir/fake-bin/gh"
+cp "$temporary_dir/interactive/.poorman-aws.yml" "$temporary_dir/dispatch/.poorman-aws.yml"
+(
+  cd "$temporary_dir/dispatch"
+  export PATH="$temporary_dir/fake-bin:$PATH"
+  export GH_REPOSITORY=example/consumer
+  export FAKE_GH_LOG="$temporary_dir/gh.log"
+  "$wrapper" plan --environment staging >/dev/null
+  grep -Fq 'workflow run poorman-aws-backend-infra.yml --repo example/consumer -f environment=staging -f apply=false' "$temporary_dir/gh.log"
+  "$wrapper" --dry-run plan --environment staging >/dev/null
+  "$wrapper" --dry-run release --environment staging --apply --confirm RELEASE-STAGING >/dev/null
+  "$wrapper" --dry-run rollback --environment staging --release-id abc1234 \
+    --apply --confirm ROLLBACK-STAGING >/dev/null
+  "$wrapper" --dry-run lifecycle --action STOP >/dev/null
+  if "$wrapper" --non-interactive apply --environment staging >/dev/null 2>&1; then
+    echo 'apply without explicit confirmation unexpectedly succeeded' >&2
+    exit 1
+  fi
 )
 
 echo 'poorman-aws wrapper checks passed'

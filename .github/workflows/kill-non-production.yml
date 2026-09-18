@@ -60,6 +60,30 @@ on:
         required: false
         default: 20
         type: number
+      retain_eip:
+        description: "Retain the EIP when a guarded destroy is planned"
+        required: false
+        default: true
+        type: boolean
+      retain_data_volume:
+        description: "Retain the data EBS volume during lifecycle operations"
+        required: false
+        default: true
+        type: boolean
+      release_retention_days:
+        description: "Current release retention period"
+        required: false
+        default: 30
+        type: number
+      enable_data_volume_backups:
+        description: "Enable the production data-volume backup policy"
+        required: false
+        default: true
+        type: boolean
+      backup_kms_key_arn:
+        description: "Optional customer-managed AWS Backup KMS key ARN"
+        required: false
+        type: string
       ssm_parameter_path:
         description: "SSM path used by the application host"
         required: false
@@ -119,6 +143,11 @@ jobs:
       TF_VAR_instance_type: ${{ inputs.instance_type }}
       TF_VAR_root_volume_size_gib: ${{ inputs.root_volume_size_gib }}
       TF_VAR_data_volume_size_gib: ${{ inputs.data_volume_size_gib }}
+      TF_VAR_retain_eip: ${{ inputs.retain_eip }}
+      TF_VAR_retain_data_volume: ${{ inputs.retain_data_volume }}
+      TF_VAR_release_retention_days: ${{ inputs.release_retention_days }}
+      TF_VAR_enable_data_volume_backups: ${{ inputs.enable_data_volume_backups }}
+      TF_VAR_backup_kms_key_arn: ${{ inputs.backup_kms_key_arn }}
       TF_VAR_ssm_parameter_path: ${{ inputs.ssm_parameter_path }}
       TF_VAR_ssm_session_kms_key_arn: ${{ inputs.ssm_session_kms_key_arn }}
       TF_VAR_route53_zone_name: ${{ inputs.route53_zone_name }}

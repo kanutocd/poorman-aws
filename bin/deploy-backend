@@ -5,24 +5,26 @@ script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: deploy-backend [--apply] [--release-id ID] [--activate-existing]
+Usage: deploy-backend [--apply] [--release-id ID] [--activate-existing] [--release-file DEST=PATH]
 
 Required environment variables: APPLICATION_NAME, ENVIRONMENT, AWS_REGION,
 ARTIFACT_BUCKET, API_URL, COMPOSE_FILE, CADDY_FILE
 Optional environment variables: INSTANCE_ID, BUILD_CONTEXT, DOCKERFILE,
-FRONTEND_URL, FRONTEND_ORIGIN, APPLICATION_API_TOKEN
+FRONTEND_URL, FRONTEND_ORIGIN, APPLICATION_API_TOKEN, SUPPLEMENTAL_RELEASE_FILES
 EOF
 }
 
 apply=false
 activate_existing=false
 release_id="${RELEASE_ID:-}"
+supplemental_files=()
 
 while (($# > 0)); do
   case "$1" in
     --apply) apply=true ;;
     --activate-existing) activate_existing=true ;;
     --release-id) shift; release_id="${1:-}" ;;
+    --release-file) shift; supplemental_files+=("${1:-}") ;;
     --help) usage; exit 0 ;;
     *) usage; exit 1 ;;
   esac
@@ -38,6 +40,11 @@ compose_file="${COMPOSE_FILE:?COMPOSE_FILE is required}"
 caddy_file="${CADDY_FILE:?CADDY_FILE is required}"
 build_context="${BUILD_CONTEXT:-.}"
 dockerfile="${DOCKERFILE:-Dockerfile}"
+
+if [[ -n "${SUPPLEMENTAL_RELEASE_FILES:-}" ]]; then
+  IFS=',' read -ra configured_supplemental_files <<<"$SUPPLEMENTAL_RELEASE_FILES"
+  supplemental_files+=("${configured_supplemental_files[@]}")
+fi
 
 [[ "$application_name" =~ ^[a-z][a-z0-9-]{1,32}$ ]] || {
   echo "APPLICATION_NAME must be 2-33 lowercase letters, numbers, or hyphens and start with a letter" >&2
@@ -74,8 +81,42 @@ for required_file in "${required_files[@]}"; do
   }
 done
 
+supplemental_artifacts=()
+supplemental_sources=()
+declare -A seen_supplemental_artifacts=()
+for supplemental_file in "${supplemental_files[@]}"; do
+  [[ "$supplemental_file" == *=* ]] || {
+    echo "supplemental release file must use DEST=PATH: $supplemental_file" >&2
+    exit 1
+  }
+  artifact_name="${supplemental_file%%=*}"
+  artifact_source="${supplemental_file#*=}"
+  [[ "$artifact_name" =~ ^[A-Za-z0-9._/-]+$ && "$artifact_name" != /* && "$artifact_name" != *'..'* && "$artifact_name" != */ ]] || {
+    echo "invalid supplemental release artifact path: $artifact_name" >&2
+    exit 1
+  }
+  case "$artifact_name" in
+    image.tar.zst|compose.yaml|Caddyfile|manifest.json)
+      echo "supplemental artifact conflicts with a reserved release artifact: $artifact_name" >&2
+      exit 1 ;;
+  esac
+  [[ ! -v "seen_supplemental_artifacts[$artifact_name]" ]] || {
+    echo "duplicate supplemental release artifact path: $artifact_name" >&2
+    exit 1
+  }
+  seen_supplemental_artifacts["$artifact_name"]=1
+  [[ -r "$artifact_source" ]] || {
+    echo "missing supplemental release file: $artifact_source" >&2
+    exit 1
+  }
+  supplemental_artifacts+=("$artifact_name")
+  supplemental_sources+=("$artifact_source")
+done
+
 release_prefix="releases/$release_id"
 release_artifacts=(image.tar.zst compose.yaml Caddyfile manifest.json)
+artifact_payloads=(image.tar.zst compose.yaml Caddyfile)
+expected_artifact_count=$((4 + ${#supplemental_artifacts[@]}))
 echo "Backend release: $release_id"
 echo "Environment: $environment"
 echo "Region: $aws_region"
@@ -104,7 +145,7 @@ case "$published_artifacts" in
       exit 1
     fi
     ;;
-  4)
+  "$expected_artifact_count")
     activate_existing=true
     echo "Immutable release already published; reusing: s3://$artifact_bucket/$release_prefix/"
     ;;
@@ -120,12 +161,19 @@ if [[ "$activate_existing" != true ]]; then
   docker save "$image_name" | zstd -T0 -19 >"$temporary_directory/image.tar.zst"
   cp "$compose_file" "$temporary_directory/compose.yaml"
   cp "$caddy_file" "$temporary_directory/Caddyfile"
+  for index in "${!supplemental_artifacts[@]}"; do
+    artifact_name="${supplemental_artifacts[$index]}"
+    install -d "$(dirname "$temporary_directory/$artifact_name")"
+    cp "${supplemental_sources[$index]}" "$temporary_directory/$artifact_name"
+    artifact_payloads+=("$artifact_name")
+  done
 
-  checksums="$(cd "$temporary_directory" && sha256sum image.tar.zst compose.yaml Caddyfile | jq -Rn '[inputs | capture("^(?<checksum>[0-9a-f]+)  (?<path>.+)$") | {(.path): .checksum}] | add')"
+  checksums="$(cd "$temporary_directory" && sha256sum "${artifact_payloads[@]}" | jq -Rn '[inputs | capture("^(?<checksum>[0-9a-f]+)  (?<path>.+)$") | {(.path): .checksum}] | add')"
+  supplemental_json="$(printf '%s\n' "${supplemental_artifacts[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')"
   jq -n --arg application "$application_name" --arg environment "$environment" \
     --arg release_id "$release_id" --arg architecture arm64 \
-    --argjson checksums "$checksums" \
-    '{application: $application, environment: $environment, release_id: $release_id, architecture: $architecture, checksums: $checksums}' \
+    --argjson checksums "$checksums" --argjson supplemental "$supplemental_json" \
+    '{application: $application, environment: $environment, release_id: $release_id, architecture: $architecture, checksums: $checksums, supplemental_artifacts: $supplemental}' \
     >"$temporary_directory/manifest.json"
 
   for artifact in "${release_artifacts[@]}"; do

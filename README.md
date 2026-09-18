@@ -259,6 +259,30 @@ consumer-owned files cause a conflict and are never overwritten unless
 `--overwrite` is explicitly supplied after review. `--dry-run` previews the
 files without writing them.
 
+After onboarding, operational adapters dispatch the generated consumer callers
+through GitHub CLI. Plans are non-mutating; applies, releases, rollbacks,
+parameter writes, and lifecycle actions require explicit `--apply` and the
+action-specific `--confirm` phrase. Production data-volume retention and
+backup inputs default on and are enforced by the reusable OpenTofu workflow;
+the lifecycle adapter is restricted to staging.
+
+Examples:
+
+```bash
+./bin/poorman-aws plan --environment staging
+./bin/poorman-aws release --environment staging --apply \
+  --confirm RELEASE-STAGING
+./bin/poorman-aws rollback --environment staging --release-id abc1234 \
+  --apply --confirm ROLLBACK-STAGING
+./bin/poorman-aws lifecycle --action STOP
+```
+
+Supplemental consumer release files can be configured as comma-separated
+`DEST=PATH` entries under `backend.supplemental_files`, or supplied with
+`--release-file DEST=PATH`. They are checksummed in the immutable release
+manifest and downloaded only after manifest validation; paths cannot escape the
+release directory or replace reserved artifacts.
+
 The wrapper discovers `.poorman-aws.yml` or `.poorman-aws.yaml`, or accepts an
 explicit `--config PATH`. Precedence is built-in defaults, discovered or
 explicit YAML, then command-line options. Configuration is restricted to
@@ -277,6 +301,7 @@ The repository publishes these consumer-facing `workflow_call` entry points:
 - `.github/workflows/deploy-frontend.yml`
 - `.github/workflows/rollback-frontend.yml`
 - `.github/workflows/kill-non-production.yml`
+- `.github/workflows/bootstrap-backend-parameters.yml`
 - `.github/workflows/sync-github-environment.yml`
 
 `.github/workflows/quality.yml` is repository-local quality automation. It is

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Self-contained consumer entry point. It is intentionally safe:
 # operational commands are reserved until their adapters are implemented.
 
@@ -19,6 +21,21 @@ check_ami=false
 check_github=false
 command_name=''
 command_args=()
+command_environment=''
+command_apply=false
+command_confirm=''
+command_repo=''
+command_release_id=''
+command_action=''
+command_subnet_id=''
+command_ssh_cidr=''
+command_ami_name_prefix=''
+command_wait=false
+command_env_file=''
+command_clear_parameter=''
+command_non_secret_parameters=()
+command_allow_type_change=false
+command_supplemental_files=()
 
 usage() {
   cat <<'EOF'
@@ -29,10 +46,10 @@ Commands:
   config show           Show effective redacted configuration.
   doctor                Check prerequisites and the consumer repository contract.
   onboard               Generate consumer config and thin caller workflows.
-  parameters|ami build  Reserved for later operational adapters.
-  plan|apply             Reserved for later infrastructure adapters.
-  release|rollback      Reserved for later release adapters.
-  lifecycle              Reserved for later lifecycle adapter.
+  parameters|ami build  Manage runtime parameters or build a reviewed AMI.
+  plan|apply             Dispatch a protected infrastructure plan or apply.
+  release|rollback      Dispatch an immutable backend release operation.
+  lifecycle              Dispatch guarded non-production lifecycle operations.
 
 Global options:
   --config PATH         Explicit YAML configuration file.
@@ -46,6 +63,8 @@ Global options:
   --infra               Check OpenTofu and infrastructure prerequisites.
   --ami                 Check Packer and AMI-build prerequisites.
   --github              Check GitHub CLI authentication.
+  Operational options are accepted after the command; use --help with a
+  command in a consumer repository for the required values.
   --help, --version
 
 Precedence: built-in defaults < YAML configuration < command-line options.
@@ -58,9 +77,13 @@ warn() { echo "poorman-aws: warning: $*" >&2; }
 allowed_key() {
   case "$1" in
     version|application_name|infrastructure_repository|infrastructure_ref|\
-    aws.region|aws.state_bucket|backend.parameter_path|backend.compose_file|\
+    aws.region|aws.state_bucket|aws.availability_zone|aws.route53_zone_name|\
+    aws.route53_zone_id|backend.parameter_path|backend.compose_file|\
     backend.caddy_file|backend.build_context|backend.dockerfile|\
-    defaults.instance_type|defaults.root_volume_size_gib|defaults.data_volume_size_gib)
+    backend.supplemental_files|defaults.instance_type|defaults.root_volume_size_gib|\
+    defaults.data_volume_size_gib|defaults.release_retention_days|\
+    defaults.enable_data_volume_backups|defaults.backup_kms_key_arn|\
+    defaults.retain_data_volume|defaults.retain_eip)
       return 0 ;;
     *) return 1 ;;
   esac
@@ -86,10 +109,13 @@ import yaml
 allowed = {
     "version", "application_name", "infrastructure_repository",
     "infrastructure_ref", "aws.region", "aws.state_bucket",
+    "aws.availability_zone", "aws.route53_zone_name", "aws.route53_zone_id",
     "backend.parameter_path", "backend.compose_file", "backend.caddy_file",
-    "backend.build_context", "backend.dockerfile",
+    "backend.build_context", "backend.dockerfile", "backend.supplemental_files",
     "defaults.instance_type", "defaults.root_volume_size_gib",
-    "defaults.data_volume_size_gib",
+    "defaults.data_volume_size_gib", "defaults.release_retention_days",
+    "defaults.enable_data_volume_backups", "defaults.backup_kms_key_arn",
+    "defaults.retain_data_volume", "defaults.retain_eip",
 }
 
 with open(sys.argv[1], encoding="utf-8") as stream:
@@ -122,9 +148,12 @@ PY
     ruby -ryaml - "$path" <<'RUBY'
 allowed = %w[
   version application_name infrastructure_repository infrastructure_ref
-  aws.region aws.state_bucket backend.parameter_path backend.compose_file
-  backend.caddy_file backend.build_context backend.dockerfile
+  aws.region aws.state_bucket aws.availability_zone aws.route53_zone_name
+  aws.route53_zone_id backend.parameter_path backend.compose_file
+  backend.caddy_file backend.build_context backend.dockerfile backend.supplemental_files
   defaults.instance_type defaults.root_volume_size_gib defaults.data_volume_size_gib
+  defaults.release_retention_days defaults.enable_data_volume_backups
+  defaults.backup_kms_key_arn defaults.retain_data_volume defaults.retain_eip
 ]
 document = YAML.safe_load(File.read(ARGV.fetch(0)), permitted_classes: [], aliases: false) || {}
 abort 'configuration root must be a YAML mapping' unless document.is_a?(Hash)
@@ -157,14 +186,23 @@ load_defaults() {
   set_value infrastructure_repository kanutocd/poorman-aws default
   set_value infrastructure_ref main default
   set_value aws.region ap-southeast-1 default
+  set_value aws.availability_zone '' default
+  set_value aws.route53_zone_name '' default
+  set_value aws.route53_zone_id '' default
   set_value backend.parameter_path /application/staging default
   set_value backend.compose_file backend/compose.production.yaml default
   set_value backend.caddy_file backend/Caddyfile default
   set_value backend.build_context backend default
   set_value backend.dockerfile backend/Dockerfile default
+  set_value backend.supplemental_files '' default
   set_value defaults.instance_type t4g.micro default
   set_value defaults.root_volume_size_gib 10 default
   set_value defaults.data_volume_size_gib 20 default
+  set_value defaults.release_retention_days 30 default
+  set_value defaults.enable_data_volume_backups true default
+  set_value defaults.backup_kms_key_arn '' default
+  set_value defaults.retain_data_volume true default
+  set_value defaults.retain_eip true default
 }
 
 load_config() {
@@ -204,6 +242,28 @@ parse_args() {
       --infra) check_infra=true; shift; continue ;;
       --ami) check_ami=true; shift; continue ;;
       --github) check_github=true; shift; continue ;;
+      --environment) (($# >= 2)) || die '--environment requires a value'; command_environment="$2"; shift 2; continue ;;
+      --apply) command_apply=true; shift; continue ;;
+      --confirm) (($# >= 2)) || die '--confirm requires a value'; command_confirm="$2"; shift 2; continue ;;
+      --repo) (($# >= 2)) || die '--repo requires a value'; command_repo="$2"; shift 2; continue ;;
+      --release-id) (($# >= 2)) || die '--release-id requires a value'; command_release_id="$2"; shift 2; continue ;;
+      --action) (($# >= 2)) || die '--action requires a value'; command_action="$2"; shift 2; continue ;;
+      --subnet-id) (($# >= 2)) || die '--subnet-id requires a value'; command_subnet_id="$2"; shift 2; continue ;;
+      --ssh-cidr) (($# >= 2)) || die '--ssh-cidr requires a value'; command_ssh_cidr="$2"; shift 2; continue ;;
+      --ami-name-prefix) (($# >= 2)) || die '--ami-name-prefix requires a value'; command_ami_name_prefix="$2"; shift 2; continue ;;
+      --from-env-file) (($# >= 2)) || die '--from-env-file requires a path'; command_env_file="$2"; shift 2; continue ;;
+      --clear-parameter) (($# >= 2)) || die '--clear-parameter requires a name'; command_clear_parameter="$2"; shift 2; continue ;;
+      --non-secret) (($# >= 2)) || die '--non-secret requires a name'; command_non_secret_parameters+=("$2"); shift 2; continue ;;
+      --allow-type-change) command_allow_type_change=true; shift; continue ;;
+      --release-file) (($# >= 2)) || die '--release-file requires DEST=PATH'; command_supplemental_files+=("$2"); shift 2; continue ;;
+      --wait) command_wait=true; shift; continue ;;
+      --availability-zone) key=aws.availability_zone ;;
+      --route53-zone-name) key=aws.route53_zone_name ;;
+      --route53-zone-id) key=aws.route53_zone_id ;;
+      --release-retention-days) key=defaults.release_retention_days ;;
+      --backup-kms-key-arn) key=defaults.backup_kms_key_arn ;;
+      --retain-data-volume) cli_values[defaults.retain_data_volume]=true; shift; continue ;;
+      --retain-eip) cli_values[defaults.retain_eip]=true; shift; continue ;;
       --application-name) key=application_name ;;
       --infrastructure-repository) key=infrastructure_repository ;;
       --infrastructure-ref) key=infrastructure_ref ;;
@@ -244,6 +304,11 @@ validate_values() {
   [[ -n "${values[infrastructure_ref]}" && "${values[infrastructure_ref]}" != *' '* ]] ||
     die 'infrastructure_ref must be a non-empty ref'
   [[ "${values[aws.region]}" =~ ^[a-z0-9-]+$ ]] || die 'aws.region is invalid'
+  if [[ -n "${values[aws.availability_zone]}" ]]; then
+    [[ "${values[aws.availability_zone]}" =~ ^[a-z0-9-]+$ ]] || die 'aws.availability_zone is invalid'
+  fi
+  [[ -z "${values[aws.route53_zone_name]}" || "${values[aws.route53_zone_name]}" =~ ^[A-Za-z0-9.-]+$ ]] ||
+    die 'aws.route53_zone_name is invalid'
   [[ "${values[backend.parameter_path]}" =~ ^/[^/].*[^/]$ ]] ||
     die 'backend.parameter_path must be an absolute SSM path'
   [[ "${values[defaults.instance_type]}" =~ ^[a-z0-9.-]+$ ]] || die 'instance_type is invalid'
@@ -251,6 +316,14 @@ validate_values() {
     die 'root_volume_size_gib must be an integer of at least 8'
   [[ "${values[defaults.data_volume_size_gib]}" =~ ^[0-9]+$ && "${values[defaults.data_volume_size_gib]}" -ge 8 ]] ||
     die 'data_volume_size_gib must be an integer of at least 8'
+  [[ "${values[defaults.release_retention_days]}" =~ ^[0-9]+$ && "${values[defaults.release_retention_days]}" -ge 1 ]] ||
+    die 'release_retention_days must be an integer of at least 1'
+  [[ "${values[defaults.enable_data_volume_backups]}" =~ ^(true|false)$ ]] ||
+    die 'enable_data_volume_backups must be true or false'
+  [[ "${values[defaults.retain_data_volume]}" =~ ^(true|false)$ ]] ||
+    die 'retain_data_volume must be true or false'
+  [[ "${values[defaults.retain_eip]}" =~ ^(true|false)$ ]] ||
+    die 'retain_eip must be true or false'
 }
 
 show_config() {
@@ -304,6 +377,8 @@ require_onboarding_values() {
   prompt_value infrastructure_repository 'Infrastructure repository'
   prompt_value infrastructure_ref 'Immutable infrastructure ref (tag or commit SHA)' true
   prompt_value aws.region 'AWS region'
+  prompt_value aws.availability_zone 'AWS availability zone' true
+  prompt_value aws.route53_zone_name 'Route 53 zone name' true
   prompt_value aws.state_bucket 'Encrypted remote state bucket' true
   prompt_value backend.parameter_path 'SSM parameter path'
   prompt_value backend.compose_file 'Consumer Compose file'
@@ -314,7 +389,8 @@ require_onboarding_values() {
   [[ "${values[infrastructure_ref]}" != main && "${values[infrastructure_ref]}" != master ]] ||
     die 'onboarding requires an immutable infrastructure ref; use a release tag or commit SHA'
   local key
-  for key in application_name infrastructure_repository infrastructure_ref aws.region aws.state_bucket \
+  for key in application_name infrastructure_repository infrastructure_ref aws.region aws.availability_zone \
+    aws.route53_zone_name aws.state_bucket \
     backend.parameter_path backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
     [[ "${values[$key]}" != *'|'* ]] || die "$key cannot contain the template delimiter |"
   done
@@ -340,17 +416,29 @@ render_workflow() {
   template="${template//__REF__/${values[infrastructure_ref]}}"
   template="${template//__APP__/${values[application_name]}}"
   template="${template//__REGION__/${values[aws.region]}}"
+  template="${template//__AZ__/${values[aws.availability_zone]}}"
+  template="${template//__ZONE__/${values[aws.route53_zone_name]}}"
+  template="${template//__ZONE_ID__/${values[aws.route53_zone_id]}}"
   template="${template//__STATE_BUCKET__/${values[aws.state_bucket]}}"
   template="${template//__PARAMETER_PATH__/${values[backend.parameter_path]}}"
   template="${template//__COMPOSE__/${values[backend.compose_file]}}"
   template="${template//__CADDY__/${values[backend.caddy_file]}}"
   template="${template//__CONTEXT__/${values[backend.build_context]}}"
   template="${template//__DOCKERFILE__/${values[backend.dockerfile]}}"
+  template="${template//__SUPPLEMENTAL_FILES__/${values[backend.supplemental_files]}}"
+  template="${template//__INSTANCE_TYPE__/${values[defaults.instance_type]}}"
+  template="${template//__ROOT_VOLUME_SIZE__/${values[defaults.root_volume_size_gib]}}"
+  template="${template//__DATA_VOLUME_SIZE__/${values[defaults.data_volume_size_gib]}}"
+  template="${template//__RETAIN_EIP__/${values[defaults.retain_eip]}}"
+  template="${template//__RETAIN_DATA_VOLUME__/${values[defaults.retain_data_volume]}}"
+  template="${template//__RELEASE_RETENTION_DAYS__/${values[defaults.release_retention_days]}}"
+  template="${template//__ENABLE_BACKUPS__/${values[defaults.enable_data_volume_backups]}}"
+  template="${template//__BACKUP_KMS_KEY_ARN__/${values[defaults.backup_kms_key_arn]}}"
   printf '%s' "$template"
 }
 
 prepare_onboarding_files() {
-  local config_content infra deploy rollback ami
+  local config_content infra deploy rollback ami lifecycle parameters
   onboarding_tmp="$(mktemp -d "${TMPDIR:-/tmp}/poorman-aws-onboard.XXXXXX")"
   generated_targets=()
   generated_sources=()
@@ -361,6 +449,9 @@ infrastructure_repository: ${values[infrastructure_repository]}
 infrastructure_ref: ${values[infrastructure_ref]}
 aws:
   region: ${values[aws.region]}
+  availability_zone: ${values[aws.availability_zone]}
+  route53_zone_name: ${values[aws.route53_zone_name]}
+  route53_zone_id: ${values[aws.route53_zone_id]}
   state_bucket: ${values[aws.state_bucket]}
 backend:
   parameter_path: ${values[backend.parameter_path]}
@@ -368,10 +459,16 @@ backend:
   caddy_file: ${values[backend.caddy_file]}
   build_context: ${values[backend.build_context]}
   dockerfile: ${values[backend.dockerfile]}
+  supplemental_files: ${values[backend.supplemental_files]}
 defaults:
   instance_type: ${values[defaults.instance_type]}
   root_volume_size_gib: ${values[defaults.root_volume_size_gib]}
   data_volume_size_gib: ${values[defaults.data_volume_size_gib]}
+  release_retention_days: ${values[defaults.release_retention_days]}
+  enable_data_volume_backups: ${values[defaults.enable_data_volume_backups]}
+  backup_kms_key_arn: ${values[defaults.backup_kms_key_arn]}
+  retain_data_volume: ${values[defaults.retain_data_volume]}
+  retain_eip: ${values[defaults.retain_eip]}
 EOF
 )"
   if [[ "$config_explicit" == false ]]; then stage_onboarding_file .poorman-aws.yml "$config_content"; fi
@@ -405,14 +502,19 @@ jobs:
       apply: ${{ github.event_name == 'workflow_dispatch' && inputs.apply || false }}
       aws_region: __REGION__
       state_bucket: __STATE_BUCKET__
-      availability_zone: ${{ vars.AVAILABILITY_ZONE }}
-      instance_type: ${{ vars.INSTANCE_TYPE || 't4g.micro' }}
-      root_volume_size_gib: ${{ vars.ROOT_VOLUME_SIZE_GIB || 10 }}
-      data_volume_size_gib: ${{ vars.DATA_VOLUME_SIZE_GIB || 20 }}
+      availability_zone: ${{ vars.AVAILABILITY_ZONE || '__AZ__' }}
+      instance_type: ${{ vars.INSTANCE_TYPE || '__INSTANCE_TYPE__' }}
+      root_volume_size_gib: ${{ vars.ROOT_VOLUME_SIZE_GIB || __ROOT_VOLUME_SIZE__ }}
+      data_volume_size_gib: ${{ vars.DATA_VOLUME_SIZE_GIB || __DATA_VOLUME_SIZE__ }}
+      retain_eip: ${{ vars.RETAIN_EIP || __RETAIN_EIP__ }}
+      retain_data_volume: ${{ vars.RETAIN_DATA_VOLUME || __RETAIN_DATA_VOLUME__ }}
+      release_retention_days: ${{ vars.RELEASE_RETENTION_DAYS || __RELEASE_RETENTION_DAYS__ }}
+      enable_data_volume_backups: ${{ vars.ENABLE_DATA_VOLUME_BACKUPS || __ENABLE_BACKUPS__ }}
+      backup_kms_key_arn: ${{ vars.BACKUP_KMS_KEY_ARN || '__BACKUP_KMS_KEY_ARN__' }}
       ssm_parameter_path: __PARAMETER_PATH__
       ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN }}
-      route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME }}
-      route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
+      route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME || '__ZONE__' }}
+      route53_zone_id: ${{ vars.ROUTE53_ZONE_ID || '__ZONE_ID__' }}
       tags_json: '{}'
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
@@ -429,6 +531,11 @@ on:
         default: staging
         type: choice
         options: [staging, production]
+      supplemental_files:
+        description: Optional comma-separated DEST=PATH release files
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
 jobs:
@@ -446,6 +553,7 @@ jobs:
       caddy_file: __CADDY__
       build_context: __CONTEXT__
       dockerfile: __DOCKERFILE__
+      supplemental_files: ${{ inputs.supplemental_files || '__SUPPLEMENTAL_FILES__' }}
       frontend_url: ${{ vars.FRONTEND_URL }}
       frontend_origin: ${{ vars.FRONTEND_ORIGIN }}
     secrets:
@@ -522,10 +630,106 @@ jobs:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
 EOF
 )"
+  lifecycle="$(cat <<'EOF'
+name: poorman-aws non-production lifecycle
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Guarded staging lifecycle action
+        required: true
+        default: STOP
+        type: choice
+        options: [STOP, DESTROY, NUKE]
+      confirmation:
+        description: Must match ACTION-STAGING when applying
+        required: true
+        type: string
+      apply:
+        description: Execute the selected action
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  lifecycle:
+    uses: __REPOSITORY__/.github/workflows/kill-non-production.yml@__REF__
+    with:
+      infrastructure_repository: __REPOSITORY__
+      infrastructure_ref: __REF__
+      application_name: __APP__
+      environment: staging
+      action: ${{ inputs.action }}
+      confirmation: ${{ inputs.confirmation }}
+      apply: ${{ inputs.apply }}
+      aws_region: __REGION__
+      state_bucket: __STATE_BUCKET__
+      availability_zone: ${{ vars.AVAILABILITY_ZONE || '__AZ__' }}
+      instance_type: ${{ vars.INSTANCE_TYPE || '__INSTANCE_TYPE__' }}
+      root_volume_size_gib: ${{ vars.ROOT_VOLUME_SIZE_GIB || __ROOT_VOLUME_SIZE__ }}
+      data_volume_size_gib: ${{ vars.DATA_VOLUME_SIZE_GIB || __DATA_VOLUME_SIZE__ }}
+      retain_eip: ${{ vars.RETAIN_EIP || __RETAIN_EIP__ }}
+      retain_data_volume: ${{ vars.RETAIN_DATA_VOLUME || __RETAIN_DATA_VOLUME__ }}
+      release_retention_days: ${{ vars.RELEASE_RETENTION_DAYS || __RELEASE_RETENTION_DAYS__ }}
+      enable_data_volume_backups: ${{ vars.ENABLE_DATA_VOLUME_BACKUPS || __ENABLE_BACKUPS__ }}
+      backup_kms_key_arn: ${{ vars.BACKUP_KMS_KEY_ARN || '__BACKUP_KMS_KEY_ARN__' }}
+      ssm_parameter_path: __PARAMETER_PATH__
+      ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN }}
+      route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME || '__ZONE__' }}
+      route53_zone_id: ${{ vars.ROUTE53_ZONE_ID || '__ZONE_ID__' }}
+      tags_json: '{}'
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
+      ami_id: ${{ secrets.AMI_ID }}
+EOF
+ )"
+  parameters="$(cat <<'EOF'
+name: poorman-aws backend parameters
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      apply:
+        description: Write the protected runtime parameters
+        required: true
+        default: false
+        type: boolean
+      clear_parameter:
+        description: Optional uppercase parameter name to delete
+        required: false
+        type: string
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  parameters:
+    uses: __REPOSITORY__/.github/workflows/bootstrap-backend-parameters.yml@__REF__
+    with:
+      infrastructure_repository: __REPOSITORY__
+      infrastructure_ref: __REF__
+      application_name: __APP__
+      environment: ${{ inputs.environment }}
+      apply: ${{ inputs.apply }}
+      clear_parameter: ${{ inputs.clear_parameter }}
+      aws_region: __REGION__
+      parameter_path: __PARAMETER_PATH__
+      non_secret_parameters: ${{ vars.NON_SECRET_PARAMETERS }}
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
+      environment_parameters: ${{ secrets.RUNTIME_PARAMETERS }}
+EOF
+ )"
   stage_onboarding_file .github/workflows/poorman-aws-backend-infra.yml "$(render_workflow "$infra")"
   stage_onboarding_file .github/workflows/poorman-aws-backend-deploy.yml "$(render_workflow "$deploy")"
   stage_onboarding_file .github/workflows/poorman-aws-backend-rollback.yml "$(render_workflow "$rollback")"
   stage_onboarding_file .github/workflows/poorman-aws-backend-ami.yml "$(render_workflow "$ami")"
+  stage_onboarding_file .github/workflows/poorman-aws-lifecycle.yml "$(render_workflow "$lifecycle")"
+  stage_onboarding_file .github/workflows/poorman-aws-backend-parameters.yml "$(render_workflow "$parameters")"
 }
 
 write_onboarding_files() {
@@ -567,6 +771,178 @@ onboard() {
   fi
   prepare_onboarding_files
   write_onboarding_files
+}
+
+operational_environment() {
+  local environment="${command_environment:-staging}"
+  [[ "$environment" =~ ^(staging|production)$ ]] || die '--environment must be staging or production'
+  printf '%s\n' "$environment"
+}
+
+consumer_repository() {
+  if [[ -n "$command_repo" ]]; then
+    [[ "$command_repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || die '--repo must be OWNER/REPOSITORY'
+    printf '%s\n' "$command_repo"
+  elif [[ -n "${GH_REPOSITORY:-}" ]]; then
+    printf '%s\n' "$GH_REPOSITORY"
+  elif [[ "$dry_run" == true ]]; then
+    printf '%s\n' '<current-consumer-repository>'
+  else
+    command -v gh >/dev/null 2>&1 || die 'gh is required to dispatch consumer workflows; pass --dry-run to preview'
+    gh repo view --json nameWithOwner --jq .nameWithOwner
+  fi
+}
+
+require_immutable_ref() {
+  [[ "${values[infrastructure_ref]}" != main && "${values[infrastructure_ref]}" != master ]] ||
+    die 'operational commands require an immutable infrastructure ref; use a release tag or commit SHA'
+}
+
+require_mutation_confirmation() {
+  local expected="$1" answer
+  [[ "$command_apply" == true ]] || die "mutating operation requires --apply --confirm $expected"
+  if [[ "$command_confirm" != "$expected" && "$non_interactive" == true ]]; then
+    die "--non-interactive mutating operation requires --confirm $expected"
+  fi
+  if [[ "$command_confirm" != "$expected" ]]; then
+    printf 'Type %s to continue: ' "$expected" >&2
+    IFS= read -r answer
+    [[ "$answer" == "$expected" ]] || die 'confirmation did not match; operation cancelled'
+  fi
+}
+
+dispatch_workflow() {
+  local workflow="$1" repo="$2" field run_args=()
+  shift 2
+  run_args=(workflow run "$workflow" --repo "$repo")
+  while (($# > 0)); do
+    field="$1"
+    run_args+=(-f "$field")
+    shift
+  done
+  if [[ "$dry_run" == true ]]; then
+    printf 'would dispatch:'
+    printf ' %q' gh "${run_args[@]}"
+    printf '\n'
+    return
+  fi
+  command -v gh >/dev/null 2>&1 || die 'gh is required to dispatch a consumer workflow'
+  gh "${run_args[@]}"
+  echo "dispatched $workflow in $repo"
+  if [[ "$command_wait" == true ]]; then
+    die '--wait is not supported because GitHub does not return a run ID from workflow dispatch'
+  fi
+}
+
+parameters_adapter() {
+  local environment repo
+  environment="$(operational_environment)"
+  require_immutable_ref
+  [[ -n "$command_env_file" || -n "$command_clear_parameter" ]] ||
+    die 'parameters requires --from-env-file or --clear-parameter'
+  if [[ "$command_apply" == true ]]; then
+    require_mutation_confirmation "PARAMETERS-${environment^^}"
+  fi
+  if [[ -n "$command_env_file" ]]; then
+    [[ -x "$script_directory/bootstrap-backend-parameters" ]] ||
+      die 'this remote wrapper cannot read local parameter files; use the generated parameters workflow with RUNTIME_PARAMETERS'
+    local parameter_args=(
+      --environment "$environment"
+      --application-name "${values[application_name]}"
+      --parameter-path "${values[backend.parameter_path]}"
+      --from-env-file "$command_env_file"
+    )
+    local parameter
+    for parameter in "${command_non_secret_parameters[@]}"; do parameter_args+=(--non-secret "$parameter"); done
+    [[ "$command_allow_type_change" == true ]] && parameter_args+=(--allow-type-change)
+    [[ "$command_apply" == true ]] && parameter_args+=(--apply)
+    AWS_REGION="${values[aws.region]}" "$script_directory/bootstrap-backend-parameters" "${parameter_args[@]}"
+    return
+  fi
+  repo="$(consumer_repository)"
+  dispatch_workflow poorman-aws-backend-parameters.yml "$repo" \
+    "environment=$environment" \
+    "apply=$command_apply" \
+    "clear_parameter=$command_clear_parameter"
+}
+
+infrastructure_adapter() {
+  local environment repo apply_value
+  environment="$(operational_environment)"
+  require_immutable_ref
+  if [[ "$command_name" == apply ]]; then
+    require_mutation_confirmation "APPLY-${environment^^}"
+    apply_value=true
+  else
+    apply_value=false
+  fi
+  repo="$(consumer_repository)"
+  dispatch_workflow poorman-aws-backend-infra.yml "$repo" \
+    "environment=$environment" "apply=$apply_value"
+}
+
+release_adapter() {
+  local environment repo supplemental=''
+  environment="$(operational_environment)"
+  require_immutable_ref
+  require_mutation_confirmation "RELEASE-${environment^^}"
+  repo="$(consumer_repository)"
+  if ((${#command_supplemental_files[@]} > 0)); then
+    supplemental="$(IFS=,; printf '%s' "${command_supplemental_files[*]}")"
+  fi
+  dispatch_workflow poorman-aws-backend-deploy.yml "$repo" \
+    "environment=$environment" "supplemental_files=$supplemental"
+}
+
+rollback_adapter() {
+  local environment repo
+  environment="$(operational_environment)"
+  require_immutable_ref
+  [[ "$command_release_id" =~ ^[0-9a-f]{7,64}$ ]] ||
+    die 'rollback requires --release-id with a hexadecimal release identifier'
+  require_mutation_confirmation "ROLLBACK-${environment^^}"
+  repo="$(consumer_repository)"
+  dispatch_workflow poorman-aws-backend-rollback.yml "$repo" \
+    "environment=$environment" "release_id=$command_release_id"
+}
+
+ami_adapter() {
+  local repo
+  require_immutable_ref
+  [[ -n "$command_subnet_id" && -n "$command_ssh_cidr" ]] ||
+    die 'ami build requires --subnet-id and --ssh-cidr'
+  command_ami_name_prefix="${command_ami_name_prefix:-${values[application_name]}-backend}"
+  repo="$(consumer_repository)"
+  dispatch_workflow poorman-aws-backend-ami.yml "$repo" \
+    "subnet_id=$command_subnet_id" "ssh_cidr=$command_ssh_cidr" \
+    "ami_name_prefix=$command_ami_name_prefix"
+}
+
+lifecycle_adapter() {
+  local environment repo action
+  environment="$(operational_environment)"
+  [[ "$environment" == staging ]] || die 'lifecycle is restricted to staging'
+  require_immutable_ref
+  action="${command_action:-${command_args[0]:-}}"
+  [[ "$action" =~ ^(STOP|DESTROY|NUKE)$ ]] || die 'lifecycle requires --action STOP|DESTROY|NUKE'
+  if [[ "$command_apply" == true ]]; then require_mutation_confirmation "${action}-STAGING"; fi
+  repo="$(consumer_repository)"
+  dispatch_workflow poorman-aws-lifecycle.yml "$repo" \
+    "action=$action" "confirmation=$command_confirm" "apply=$command_apply"
+}
+
+operational_adapter() {
+  case "$command_name" in
+    parameters) parameters_adapter ;;
+    plan|apply) infrastructure_adapter ;;
+    release) release_adapter ;;
+    rollback) rollback_adapter ;;
+    lifecycle) lifecycle_adapter ;;
+    ami)
+      [[ "${command_args[0]:-build}" == build ]] || die 'usage: ami build'
+      ami_adapter ;;
+    *) die "unsupported operational command: $command_name" ;;
+  esac
 }
 
 doctor_failure=0
@@ -754,7 +1130,7 @@ main() {
     doctor) doctor ;;
     onboard) onboard ;;
     parameters|ami|plan|apply|release|rollback|lifecycle)
-      reserved_command "$command_name ${command_args[*]:-}" ;;
+      operational_adapter ;;
     help) usage ;;
     *) die "unknown command: $command_name" ;;
   esac

@@ -62,6 +62,11 @@ on:
         description: "Optional explicit target EC2 instance ID"
         required: false
         type: string
+      supplemental_files:
+        description: "Comma-separated DEST=PATH consumer release files"
+        required: false
+        default: ""
+        type: string
     secrets:
       aws_role_arn:
         description: "IAM role allowed to deploy the backend"
@@ -94,6 +99,7 @@ jobs:
       FRONTEND_URL: ${{ inputs.frontend_url }}
       FRONTEND_ORIGIN: ${{ inputs.frontend_origin }}
       INSTANCE_ID: ${{ inputs.instance_id }}
+      SUPPLEMENTAL_RELEASE_FILES: ${{ inputs.supplemental_files }}
 
     steps:
       - name: Check out consumer repository
@@ -141,4 +147,10 @@ jobs:
           CADDY_FILE: ${{ github.workspace }}/${{ inputs.caddy_file }}
           BUILD_CONTEXT: ${{ github.workspace }}/${{ inputs.build_context }}
           DOCKERFILE: ${{ github.workspace }}/${{ inputs.dockerfile }}
-        run: bash poorman-aws/bin/deploy-backend --apply
+        run: |
+          arguments=(--apply)
+          IFS=',' read -ra supplemental_files <<<"$SUPPLEMENTAL_RELEASE_FILES"
+          for supplemental_file in "${supplemental_files[@]}"; do
+            [[ -n "$supplemental_file" ]] && arguments+=(--release-file "$supplemental_file")
+          done
+          bash poorman-aws/bin/deploy-backend "${arguments[@]}"
