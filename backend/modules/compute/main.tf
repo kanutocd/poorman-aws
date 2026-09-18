@@ -151,8 +151,8 @@ resource "aws_instance" "this" {
     artifact_bucket_name          = var.artifact_bucket_name
     artifact_prefix               = var.artifact_prefix
     ssm_parameter_path            = var.ssm_parameter_path
-    render_runtime_env_script_b64 = base64encode(file("${path.root}/scripts/render-runtime-env"))
-    activate_release_script_b64   = base64encode(file("${path.root}/scripts/activate-release"))
+    render_runtime_env_script_b64 = base64encode(file("${path.module}/../../scripts/render-runtime-env"))
+    activate_release_script_b64   = base64encode(file("${path.module}/../../scripts/activate-release"))
   })
 
   metadata_options {
