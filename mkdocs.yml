@@ -14,7 +14,6 @@ theme:
   language: en
   font: false
   features:
-    - navigation.sections
     - navigation.top
     - search.highlight
     - search.share
