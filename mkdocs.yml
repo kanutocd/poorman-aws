@@ -12,6 +12,7 @@ exclude_docs: |
 theme:
   name: material
   language: en
+  font: false
   features:
     - navigation.sections
     - navigation.top
@@ -19,6 +20,7 @@ theme:
     - search.share
     - content.action.edit
     - content.code.copy
+    - navigation.footer
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -79,6 +81,12 @@ nav:
 
 extra:
   generator: false
+
+extra_javascript:
+  - javascripts/mermaid-panzoom.js
+
+extra_css:
+  - stylesheets/mermaid-panzoom.css
 
 plugins:
   - search
