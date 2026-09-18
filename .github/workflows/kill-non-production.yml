@@ -9,8 +9,7 @@ on:
         type: string
       infrastructure_ref:
         description: "Ref of the reusable infrastructure to execute"
-        required: false
-        default: main
+        required: true
         type: string
       application_name:
         description: "Application identifier used in resource tags and state"
@@ -155,6 +154,12 @@ jobs:
       TF_VAR_tags: ${{ inputs.tags_json }}
 
     steps:
+      - name: Reject floating infrastructure ref
+        if: inputs.infrastructure_ref == 'main' || inputs.infrastructure_ref == 'master'
+        run: |
+          echo 'lifecycle operations require an immutable infrastructure ref' >&2
+          exit 1
+
       - name: Check out infrastructure repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

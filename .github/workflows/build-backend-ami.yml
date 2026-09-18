@@ -9,8 +9,7 @@ on:
         type: string
       infrastructure_ref:
         description: "Ref of the reusable infrastructure to execute"
-        required: false
-        default: main
+        required: true
         type: string
       application_name:
         description: "Application identifier used in AMI metadata and paths"

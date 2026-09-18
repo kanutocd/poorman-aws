@@ -9,8 +9,7 @@ on:
         type: string
       source_ref:
         description: Ref of the poorman-aws repository to execute
-        required: false
-        default: main
+        required: true
         type: string
       environment:
         description: Repository environment to create or update
@@ -39,6 +38,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Reject floating source ref
+        if: inputs.source_ref == 'main' || inputs.source_ref == 'master'
+        run: |
+          echo 'environment synchronization requires an immutable source ref' >&2
+          exit 1
+
       - name: Check out poorman-aws
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

@@ -9,13 +9,11 @@ on:
         type: string
       infrastructure_ref:
         description: "Ref of the reusable infrastructure to execute"
-        required: false
-        default: main
+        required: true
         type: string
       consumer_ref:
         description: "Consumer repository ref containing compatible release files"
-        required: false
-        default: main
+        required: true
         type: string
       application_name:
         description: "Application identifier used in the release"
@@ -90,6 +88,12 @@ jobs:
       FRONTEND_ORIGIN: ${{ inputs.frontend_origin }}
 
     steps:
+      - name: Reject floating infrastructure ref in production
+        if: inputs.environment == 'production' && (inputs.infrastructure_ref == 'main' || inputs.infrastructure_ref == 'master')
+        run: |
+          echo 'production requires an immutable infrastructure ref' >&2
+          exit 1
+
       - name: Check out consumer repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
