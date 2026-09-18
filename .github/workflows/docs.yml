@@ -35,21 +35,35 @@ jobs:
       - name: Install documentation dependencies
         run: python -m pip install --requirement requirements-docs.txt
 
+      - name: Restore documentation tools
+        id: docs-tools-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .docs-tools
+          key: docs-tools-${{ runner.os }}-${{ runner.arch }}-vale-3.21.0-lychee-0.24.2-markdownlint-0.23.2
+
       - name: Build documentation
         run: bin/docs build --strict
 
       - name: Install documentation linters
+        if: steps.docs-tools-cache.outputs.cache-hit != 'true'
         run: |
-          go install github.com/vale-cli/vale/v3/cmd/vale@v3.21.0
-          cargo install lychee --version 0.24.2 --locked
-          npm install --global markdownlint-cli2@0.23.2
+          set -euo pipefail
+          tool_directory="$GITHUB_WORKSPACE/.docs-tools"
+          mkdir -p "$tool_directory/bin"
+          GOBIN="$tool_directory/bin" go install github.com/vale-cli/vale/v3/cmd/vale@v3.21.0
+          cargo install --quiet --root "$tool_directory" lychee --version 0.24.2 --locked
+          npm install --quiet --no-audit --no-fund --prefix "$tool_directory" markdownlint-cli2@0.23.2
 
       - name: Lint documentation
         run: |
-          export PATH="$HOME/go/bin:$HOME/.cargo/bin:$PATH"
-          vale docs/mkdocs README.md CHANGELOG.md
-          markdownlint-cli2 "**/*.md"
-          lychee --offline "docs/mkdocs/**/*.md"
+          tool_directory="$GITHUB_WORKSPACE/.docs-tools"
+          test -x "$tool_directory/bin/vale"
+          test -x "$tool_directory/bin/lychee"
+          test -x "$tool_directory/node_modules/.bin/markdownlint-cli2"
+          "$tool_directory/bin/vale" docs/mkdocs README.md CHANGELOG.md
+          "$tool_directory/node_modules/.bin/markdownlint-cli2" "**/*.md"
+          "$tool_directory/bin/lychee" --offline "docs/mkdocs/**/*.md"
 
       - name: Configure GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
