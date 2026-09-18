@@ -28,6 +28,7 @@ Options:
                             Prefix for environment frontend buckets
   --frontend-parameter-path PATH
                             SSM path for frontend deployment parameters
+  --policy-output-dir DIR  Write generated policy JSON files to DIR during dry runs
   --apply                    Create or update the provider, roles, and policies
   --help                     Show this help
 
@@ -58,6 +59,7 @@ frontend_state_prefix="${FRONTEND_STATE_PREFIX:-${application_name}-frontend-sta
 frontend_assets_prefix="${FRONTEND_ASSETS_PREFIX:-${application_name}-frontend-assets-}"
 frontend_bucket_prefix="${FRONTEND_BUCKET_PREFIX:-${application_name}-frontend-}"
 frontend_parameter_path="${FRONTEND_PARAMETER_PATH:-/${application_name}/frontend}"
+policy_output_dir=''
 apply=false
 
 while [[ $# -gt 0 ]]; do
@@ -125,6 +127,11 @@ while [[ $# -gt 0 ]]; do
       frontend_parameter_path="$2"
       shift 2
       ;;
+    --policy-output-dir)
+      [[ $# -ge 2 ]] || die "--policy-output-dir requires a directory"
+      policy_output_dir="$2"
+      shift 2
+      ;;
     --apply)
       apply=true
       shift
@@ -188,6 +195,11 @@ cleanup() {
   rm -rf "$temporary_dir"
 }
 trap cleanup EXIT
+policy_directory="$temporary_dir"
+if [[ -n "$policy_output_dir" ]]; then
+  mkdir -p "$policy_output_dir"
+  policy_directory="$policy_output_dir"
+fi
 
 write_trust_policy() {
   local environment="$1"
@@ -645,9 +657,16 @@ if [[ "$route53_resource" == '*' && "$create_hosted_zone" != true ]]; then
   printf '%s\n' 'warning: Route 53 permissions are account-wide; pass --route53-zone-id to scope them.' >&2
 fi
 
+for environment in staging production; do
+  write_deployment_policy "$environment" "$policy_directory/${environment}-permissions.json"
+done
+
 if [[ "$apply" != true ]]; then
   if [[ "$create_hosted_zone" == true ]]; then
     printf 'Would create or reuse public Route 53 hosted zone: %s\n' "$route53_zone_name"
+  fi
+  if [[ -n "$policy_output_dir" ]]; then
+    printf 'Rendered deployment policies in: %s\n' "$policy_output_dir"
   fi
   printf '%s\n' 'Dry run only. Re-run with --apply to create or update these IAM resources.'
   exit 0
@@ -701,7 +720,7 @@ fi
 for environment in "${environments[@]}"; do
   role_name="${role_prefix}-${environment}"
   trust_policy="${temporary_dir}/${environment}-trust.json"
-  permissions_policy="${temporary_dir}/${environment}-permissions.json"
+  permissions_policy="${policy_directory}/${environment}-permissions.json"
   write_trust_policy "$environment" "$trust_policy"
 
   if [[ "$environment" == 'ami-build' ]]; then
