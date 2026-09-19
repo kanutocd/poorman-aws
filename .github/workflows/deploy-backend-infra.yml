@@ -163,10 +163,8 @@ jobs:
   build_or_resolve_ami:
     name: Build or reuse host AMI
     needs: validate
-    # actionlint 1.7.12 does not yet recognize GitHub's self-repository
-    # reusable-workflow reference; GitHub accepts this syntax.
-    # actionlint-ignore workflow-call
-    uses: $/.github/workflows/build-backend-ami.yml
+    # use this format to make rhysd/actionlint happy
+    uses: ./.github/workflows/build-backend-ami.yml
     permissions:
       contents: read
       actions: write

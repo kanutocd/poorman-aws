@@ -10,8 +10,8 @@ actionlint .github/workflows/*.yml
 The quality command performs backend-disabled OpenTofu initialization,
 validation, plan-only module tests, policy and secret-handling tests, Docker
 Compose validation, Packer formatting/validation, Bash syntax checks,
-ShellCheck, and repository hygiene checks. It never runs a real OpenTofu
-apply, destroy, or cloud-backed integration test.
+ShellCheck, repository hygiene checks, and `bin/docs lint`. It never runs a
+real OpenTofu apply, destroy, or cloud-backed integration test.
 
 The GitHub Pages workflow runs the same documentation build command used
 locally: `bin/docs build --strict`. It does not need AWS credentials.
@@ -23,7 +23,7 @@ Install these tools before running the local command:
 - OpenTofu;
 - Packer;
 - Docker with the Compose plugin;
-- Bash and ShellCheck;
+- Bash, ShellCheck, and the documentation lint tools used by `bin/docs lint`;
 - actionlint for workflow validation.
 
 Use native OpenTofu and Packer installations or the same tool setup used by

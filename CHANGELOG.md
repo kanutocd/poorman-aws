@@ -21,6 +21,9 @@ All notable changes to this project are documented in this file.
 - Refreshed onboarding, wrapper, workflow-reference, AMI, and prerequisites
   documentation to match the current generated integration contract, and
   expanded policy, wrapper, release, and frontend adapter tests accordingly.
+- Added `bin/docs lint` to the main `bin/quality` verification harness and its
+  policy contract, making Vale, Markdownlint, and offline Lychee part of the
+  required local quality gate.
 
 - Made the wrapper invocation location-independent. It now resolves the
   consumer Git root, supports an explicit `--consumer-path`, and performs

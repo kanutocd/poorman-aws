@@ -72,4 +72,7 @@ shellcheck --severity=warning bin/* backend/scripts/* backend/packer/scripts/*.s
 echo "Checking repository hygiene"
 bash bin/quality-hygiene
 
+echo "Checking documentation lint"
+bash bin/docs lint
+
 echo "Quality checks passed"
