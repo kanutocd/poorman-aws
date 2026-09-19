@@ -18,7 +18,7 @@ examples locally:
 git clone --branch v0.1.0 --depth 1 \
   https://github.com/kanutocd/poorman-aws.git .poorman-aws
 
-.poorman-aws/bin/poorman-aws doctor --offline
+.poorman-aws/bin/poorman-aws install --offline
 .poorman-aws/bin/poorman-aws config validate --config .poorman-aws.yml
 .poorman-aws/bin/poorman-aws onboard --dry-run
 ```
@@ -31,7 +31,7 @@ checkout:
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v0.1.0/bin/poorman-aws \
-  | bash -s -- doctor --offline
+  | bash -s -- install --offline
 
 curl -fsSL \
   https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v0.1.0/bin/poorman-aws \

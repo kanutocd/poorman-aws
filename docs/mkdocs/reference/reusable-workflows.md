@@ -57,7 +57,6 @@ jobs:
       route53_zone_name: example.test
     secrets:
       aws_role_arn: ${{ secrets.AWS_BACKEND_ROLE_ARN }}
-      ami_id: ${{ secrets.AMI_ID }}
 ```
 
 Use `secrets: inherit` only when the caller and reusable workflow have an

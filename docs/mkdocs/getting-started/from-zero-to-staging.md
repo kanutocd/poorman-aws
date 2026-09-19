@@ -73,7 +73,7 @@ Choose either consumption mode.
 git clone --branch v0.1.0 --depth 1 \
   https://github.com/kanutocd/poorman-aws.git .poorman-aws
 
-.poorman-aws/bin/poorman-aws doctor --offline
+.poorman-aws/bin/poorman-aws install --offline
 ```
 
 ### Piped wrapper mode
@@ -81,7 +81,7 @@ git clone --branch v0.1.0 --depth 1 \
 ```bash
 curl -fsSL \
   https://raw.githubusercontent.com/kanutocd/poorman-aws/refs/tags/v0.1.0/bin/poorman-aws \
-  | bash -s -- doctor --offline
+  | bash -s -- install --offline
 ```
 
 From the consumer repository, configure the non-secret application values in
@@ -93,8 +93,10 @@ From the consumer repository, configure the non-secret application values in
 ```
 
 Review the generated caller workflows and accept them only after confirming
-that the application paths, environment names, immutable infrastructure ref,
-and deployment commands are correct:
+that the application paths, environment names, and deployment commands are
+correct. The wrapper pins the generated callers to its own immutable release
+tag (`v0.1.0` for the baseline release), including their
+`infrastructure_ref`:
 
 ```bash
 .poorman-aws/bin/poorman-aws onboard

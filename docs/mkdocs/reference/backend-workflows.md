@@ -26,13 +26,26 @@ Required inputs:
 | `availability_zone` | Single Availability Zone for the host. |
 | `ssm_parameter_path` | Runtime parameter path. |
 | `route53_zone_name` | Existing public Route 53 hosted zone. |
+| `ami_subnet_id` | Public subnet used by the idempotent AMI build-or-reuse prerequisite. |
+| `ami_ssh_cidr` | Temporary AMI builder SSH CIDR. |
+| `ami_name_prefix` | AMI name prefix used for the build fingerprint and image metadata. |
 
-Required secrets:
+Required secret:
 
 | Secret | Meaning |
 | --- | --- |
 | `aws_role_arn` | IAM role allowed to manage the selected environment. |
-| `ami_id` | Reviewed ARM64 host AMI ID. |
+| `ami_build_role_arn` | Dedicated `ami-build` IAM role used only when no matching live AMI exists. |
+
+Before planning, the workflow calls `build-backend-ami.yml`. That reusable
+workflow checks the canonical artifact and selected environment variables,
+validates the AMI and build fingerprint with AWS, and runs Packer only when no
+matching live AMI exists. The plan receives the resulting `ami_id` directly
+and fails closed if the prerequisite produces no valid ID.
+Because both workflows are owned by `poorman-aws`, the infrastructure workflow
+uses the self-repository reference `$/.github/workflows/build-backend-ami.yml`.
+This keeps the nested call on the same immutable running
+commit and avoids depending on the caller workspace checkout.
 
 Optional infrastructure inputs include `instance_type` (`t4g.micro`),
 `root_volume_size_gib` (`10`), `data_volume_size_gib` (`20`), `retain_eip`
@@ -55,10 +68,13 @@ jobs:
       availability_zone: ap-southeast-1a
       ssm_parameter_path: /example-app/staging
       route53_zone_name: example.test
+      ami_subnet_id: subnet-0123456789abcdef0
+      ami_ssh_cidr: 203.0.113.10/32
+      ami_name_prefix: example-app-backend
       apply: false
     secrets:
       aws_role_arn: ${{ secrets.AWS_BACKEND_ROLE_ARN }}
-      ami_id: ${{ secrets.AMI_ID }}
+      ami_build_role_arn: ${{ secrets.AWS_AMI_ROLE_ARN }}
 ```
 
 ## Backend deployment

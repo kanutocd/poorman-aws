@@ -1,10 +1,8 @@
 # Configure GitHub environments
 
-`bin/poorman-aws` does not currently provide a direct environment-sync command.
-Use its `onboard` command to generate thin consumer workflows, then use the
-repository synchronizer or GitHub's settings UI to create and update the
-environment values. The GitHub token must be allowed to manage the target
-repository's environment variables and secrets.
+`bin/poorman-aws` generates the thin consumer workflows and can synchronize the
+AWS role secrets required by those workflows. The GitHub CLI token must be
+allowed to manage the target repository's environments and secrets.
 
 Run the synchronizer from a checkout of `poorman-aws` or from a consumer
 checkout that contains `bin/sync-github-environment`.
@@ -37,6 +35,20 @@ run:
 bin/poorman-aws --config .poorman-aws.yml onboard
 ```
 
-Onboarding does not create GitHub environments or upload their values. It
-generates workflows that read protected GitHub variables and secrets after you
-configure them.
+Then preview and explicitly apply the standard AWS role synchronization:
+
+```bash
+bin/poorman-aws --dry-run --apply \
+  --confirm SYNC-GITHUB-ENVIRONMENTS github sync
+
+bin/poorman-aws --apply \
+  --confirm SYNC-GITHUB-ENVIRONMENTS github sync
+```
+
+The wrapper creates `staging`, `production`, and `ami-build`, then sets the
+corresponding `AWS_ROLE_ARN` secrets. For a frontend deployment shape it also
+sets `AWS_FRONTEND_ROLE_ARN` in `staging` and `production`. Role names follow
+the bootstrap default `<application>-github-<environment>`. It also sets the
+dedicated `AWS_AMI_ROLE_ARN` secret in `staging` and `production`, pointing to
+the `<application>-github-ami-build` role used by infrastructure's idempotent
+AMI prerequisite. The command never prints secret values.

@@ -7,8 +7,17 @@ non-production lifecycle actions, and GitHub environment synchronization.
 
 Workflow: `.github/workflows/build-backend-ami.yml`
 
-The workflow builds an ARM64 application-host AMI with Packer and uploads a
-redacted manifest as a workflow artifact. Required inputs are:
+The workflow builds an ARM64 application-host AMI with Packer, publishes a
+canonical AMI artifact, and updates the `AMI_ID` variable in the consumer's
+explicit target environment. It also uploads a redacted manifest. The build
+itself runs under the protected `ami-build` environment; publishing the AMI
+ID is a separate job bound to the selected target environment.
+Before Packer runs, it computes a build fingerprint, checks the canonical
+artifact and target environment variables, and validates any candidate with
+AWS. A matching available AMI is reused, so repeated triggers with the same
+inputs do not create another builder or AMI. The workflow exposes the reused
+or newly built `ami_id` as an output for dependent reusable workflows.
+Required inputs are:
 
 - `infrastructure_repository` and immutable `infrastructure_ref`;
 - `application_name`;
@@ -16,8 +25,11 @@ redacted manifest as a workflow artifact. Required inputs are:
 - `subnet_id` for the temporary public builder; and
 - `ssh_cidr`, restricted to the operator's temporary builder access range.
 
-`ami_name_prefix` is also required. The `aws_role_arn` secret must be a
-temporary, narrowly scoped AMI-build role. The workflow runs in the protected
+`ami_name_prefix` is also required. The wrapper-generated consumer caller
+provides defaults for `subnet_id`, `ssh_cidr`, and `ami_name_prefix` from the
+consumer onboarding configuration; each value remains editable at dispatch.
+The `aws_role_arn` secret must be a temporary, narrowly scoped AMI-build role.
+The workflow runs in the protected
 `ami-build` environment and does not build an application image.
 
 The wrapper equivalent is:
@@ -59,7 +71,10 @@ This workflow supports `STOP`, `DESTROY`, and `NUKE` for staging only. Required
 inputs include `infrastructure_repository`, immutable `infrastructure_ref`,
 `application_name`, `environment`, `action`, `confirmation`, `aws_region`,
 `state_bucket`, `availability_zone`, `ssm_parameter_path`, and
-`route53_zone_name`. The `aws_role_arn` and `ami_id` secrets are required.
+`route53_zone_name`. Only the `aws_role_arn` secret is required. The workflow
+resolves the AMI ID from the newest non-expired canonical artifact and falls
+back to the selected environment's `AMI_ID` variable; it fails fast when both
+sources are unavailable.
 
 The workflow accepts the same host and retention inputs as infrastructure
 deployment, including defaults of `t4g.micro`, 10 GiB root, 20 GiB data, EIP
@@ -104,7 +119,5 @@ The workflow rejects `main` and `master` as `source_ref`. The reserved secret
 name `github_token` must not be used; pass `environment_admin_token` when the
 default workflow token does not have the required repository permissions.
 
-This workflow is separate from the `bin/poorman-aws` wrapper. Use
-`bin/sync-github-environment` locally or call this reusable workflow directly;
-`onboard` generates callers that consume environment values but does not create
-the GitHub environment itself.
+The wrapper's `github sync` command can create the standard environments and
+set the AWS role secrets locally through the authenticated GitHub CLI.

@@ -4,6 +4,99 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Extended the consumer wrapper's first-run and resume flow with explicit
+  consumer-path resolution, persistent POSIX state, profile and region
+  discovery, AWS setup-privilege checks, automatic state-bucket bootstrapping,
+  deployment-shape selection, version-aware workflow generation, and offline
+  onboarding support.
+- Added idempotent AMI orchestration around the reusable workflows: AMI
+  fingerprints are validated against canonical artifacts, GitHub environment
+  variables, and live AWS images; backend infrastructure receives the AMI as a
+  reusable-workflow output; and Packer is isolated behind a single guarded
+  build job.
+- Added generic frontend adapter ownership to the infrastructure repository,
+  including the deploy/remove adapter, frontend workflow inputs, consumer
+  frontend configuration, and contract coverage that prevents generated
+  callers from embedding consumer-specific SST commands.
+- Refreshed onboarding, wrapper, workflow-reference, AMI, and prerequisites
+  documentation to match the current generated integration contract, and
+  expanded policy, wrapper, release, and frontend adapter tests accordingly.
+
+- Made the wrapper invocation location-independent. It now resolves the
+  consumer Git root, supports an explicit `--consumer-path`, and performs
+  configuration loading, state identity, contract checks, relative path
+  resolution, and onboarding writes against that consumer root.
+- Installer and onboarding now refuse to treat an arbitrary directory as a
+  consumer. They prompt for the absolute consumer path when it cannot be
+  inferred and refuse to continue when no path is supplied.
+- Consumer paths entered interactively or supplied with `--consumer-path` now
+  support the conventional `~`, `~/...`, and `~user/...` home-directory forms.
+- Offline onboarding now skips all network-backed inference, including AWS
+  Availability Zone, Route 53 zone, subnet, and public-IP lookups.
+- Onboarding prompts now identify the generated files as GitHub Actions
+  workflow integrations and print complete copy-pasteable commands for GitHub
+  environment synchronization and prerequisite verification.
+- Added configurable `defaults.target_environment` (default `staging`) to the
+  generated consumer configuration; generated deployment workflow defaults now
+  use that value while guarded lifecycle workflows remain staging-only.
+- Renamed the consumer configuration key `backend.parameter_path` to
+  `backend.ssm_parameters_path` so its AWS Systems Manager Parameter Store
+  purpose is explicit. The legacy `--parameter-path` option remains accepted,
+  alongside the clearer `--ssm-parameters-path` alias.
+- Existing consumer state/configuration checkpoints using
+  `backend.parameter_path` are now accepted and normalized to the new key
+  during loading.
+- Generated caller workflows now include documented, disabled examples for
+  `push`, `pull_request`, `workflow_run`, and `schedule` triggers. Dispatch-only
+  inputs also fall back to wrapper-generated literals so future non-dispatch
+  triggers can coexist safely.
+- Added AMI-build idempotency guardrails. The reusable AMI workflow computes a
+  build fingerprint, validates canonical-artifact and environment candidates
+  against AWS image state and fingerprint tags, and skips Packer when a matching
+  live AMI exists.
+- Refactored the reusable AMI workflow into guard, conditional-build, and
+  publish jobs. The guard now owns the single reuse decision, Packer setup and
+  execution occur only in the build job when needed, and the publish job
+  exposes the same AMI outputs for both reused and newly built images.
+- Backend infrastructure planning now depends on the idempotent AMI workflow
+  and receives its AMI output directly. The environment synchronizer provisions
+  the separate `AWS_AMI_ROLE_ARN` secret needed for that nested build-or-reuse
+  job; non-production teardown remains resolve-only.
+- The nested infrastructure-to-AMI workflow call now uses GitHub's
+  self-repository reference (`$/.github/workflows/build-backend-ami.yml`) so it
+  resolves from the same running `poorman-aws` commit without relying on the
+  caller workspace checkout.
+- Added a narrow actionlint compatibility ignore for the new self-repository
+  workflow reference; all unrelated workflow diagnostics remain enforced.
+- Added bounded retries with backoff to AMI artifact/environment discovery and
+  AWS image validation, including pending-image polling. Packer is never
+  blindly retried, while fingerprint mismatches and terminal invalid states
+  remain non-retryable.
+- Refactored the AMI workflow into guard, conditional build, and publish jobs,
+  removing repeated step-level Packer conditions while preserving canonical
+  artifact and environment publication for both reused and newly built AMIs.
+
+- Replaced manual `AMI_ID` secret wiring with a canonical AMI artifact and
+  environment-variable fallback. The AMI workflow publishes `ami-id.txt`,
+  updates only the explicitly selected target environment's `AMI_ID` variable, and the
+  infrastructure and lifecycle workflows fail fast when neither source is
+  available.
+
+- Added `github sync` to create the standard consumer environments and
+  synchronize backend `AWS_ROLE_ARN` and, when applicable, frontend
+  `AWS_FRONTEND_ROLE_ARN` secrets through the authenticated GitHub CLI. The
+  operation requires explicit `SYNC-GITHUB-ENVIRONMENTS` confirmation.
+
+- Added onboarding-persisted AMI build inputs for the public subnet, temporary
+  builder SSH CIDR, and application-derived AMI name prefix. Generated AMI
+  callers now expose all three as editable workflow defaults instead of
+  requiring them to be re-entered on every dispatch.
+
+- Made onboarding-generated caller workflows pin both their `uses` reference
+  and `infrastructure_ref` to the wrapper's immutable release tag (`v0.1.0`)
+  instead of inheriting a consumer-selected or floating `main` ref. Versioned
+  wrapper artifacts rewrite this owned default to their release tag.
+
 ### Documentation
 
 - Added a canonical “From zero to staging” guide that separates one-time AWS
@@ -44,6 +137,77 @@ All notable changes to this project are documented in this file.
 
 ### Consumer wrapper
 
+- Added the installer-style `poorman-aws install` preflight. It checks the
+  local toolchain, consumer contract, AWS identity, and GitHub CLI session;
+  optionally offers explicitly confirmed `aws configure sso` and `gh auth
+  login` flows while keeping credential storage provider-owned and all cloud
+  mutations outside the installer.
+- Added a flat, per-consumer non-secret install checkpoint under the standard
+  XDG state directory, while keeping consumer configuration and generated
+  workflows in the consumer repository.
+- Installer AWS checks now select and report the active profile, preferring an
+  explicitly supplied `AWS_PROFILE`, then `administrator`/`admin`, and finally
+  the first configured profile.
+- Installer prompts now suggest the consumer directory basename as the
+  application name, and refresh incomplete checkpoints after AWS identity
+  detection so account and caller metadata are retained even when a later
+  prerequisite is missing.
+- Repeat installer runs now restore and display saved application/profile
+  values without prompting; pass `--update` explicitly to revisit them.
+- Installer region selection now prefers the selected profile's configured
+  region, validates it against AWS, prompts when missing, writes the validated
+  value back to the profile, and persists it in the installer checkpoint.
+- When the state bucket is missing, installer preflight now performs a
+  read-only IAM policy simulation for the minimum AWS OIDC, state-bucket, and
+  Route 53 setup permissions and fails closed when authorization cannot be
+  established.
+- Installer checkpoints now persist the aggregate AWS setup-authorization
+  result separately from the overall incomplete/complete install result.
+- Added the guarded `bootstrap state-bucket` operation. It previews or creates
+  the encrypted, versioned, public-access-blocked OpenTofu state bucket,
+  verifies its settings, and persists the verified bucket name without
+  overwriting an existing consumer configuration.
+- Normal installer reruns now reuse a saved successful AWS authorization
+  preflight; `--update` explicitly refreshes the IAM simulation.
+- A successful installer authorization check now automatically enters the
+  guided state-bucket bootstrap: it suggests an application/account-derived
+  bucket name, requires the exact `CREATE-STATE-BUCKET` confirmation, applies
+  the existing encryption/versioning/public-access protections, and persists
+  the verified bucket before continuing onboarding. Non-interactive installs
+  use the equivalent `--apply --confirm CREATE-STATE-BUCKET` approval.
+- Completed interactive installs now offer to continue directly into onboarding;
+  declining pauses with the exact resume command, while non-interactive runs
+  stop after persisting the completed checkpoint.
+- Onboarding now accurately labels the infrastructure reference as accepting a
+  tag, branch, or commit SHA and permits the default `main` branch. Protected
+  operational commands continue to require an immutable tag or commit SHA.
+- Onboarding now restores the installer checkpoint and infers an available
+  standard Availability Zone from the selected AWS region when none is
+  configured, presenting it as an editable default.
+- Onboarding now suggests the sole public Route 53 hosted zone when the AWS
+  account has exactly one; multiple public zones remain an explicit user
+  choice to avoid misdirecting DNS records.
+- Onboarding now explains when no public Route 53 hosted zone is available
+  instead of presenting an unexplained empty prompt.
+- The Route 53 prompt now shows an application-derived domain example, such as
+  `villago.com`, without treating that example as a default value.
+- Onboarding now recognizes the minimal state-bucket configuration generated
+  by `install` and safely upgrades it to the complete consumer configuration;
+  genuinely existing consumer configuration still requires explicit review
+  with `--overwrite`.
+- The wrapper now mirrors the non-secret consumer configuration into the
+  per-consumer XDG state directory while retaining `.poorman-aws.yml` in the
+  repository as the authoritative and reviewable copy.
+- Onboarding now requires an explicit deployment-shape choice, defaulting to
+  `backend-and-frontend`, instead of inferring the shape from repository
+  directories. It generates backend and/or frontend workflow families only
+  for the confirmed shape.
+- Added the poorman-owned frontend SST adapter and generic configuration. The
+  reusable frontend workflows can now invoke `bin/frontend-adapter` for deploy and
+  removal, keeping frontend infrastructure implementation out of consumer
+  repositories while retaining consumer-owned source and build inputs.
+- Updated the getting-started examples to make `install --offline` the first
+  local wrapper invocation before onboarding.
 - Documented the implementation plan for generic frontend deploy, rollback,
   smoke, and guarded lifecycle adapters, including configuration precedence,
   safety boundaries, onboarding, validation, and release gates.

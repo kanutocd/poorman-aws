@@ -13,6 +13,56 @@ active identity before an AWS operation:
 aws sts get-caller-identity
 ```
 
+### One-time OpenTofu state bucket
+
+Before the first infrastructure deployment, an AWS administrator must create
+the S3 bucket that stores the remote OpenTofu state. Choose a globally unique
+bucket name and keep it in the same region used by the infrastructure.
+
+```bash
+export AWS_REGION=ap-southeast-1
+export STATE_BUCKET=my-application-tofu-state
+
+# us-east-1 does not accept a LocationConstraint.
+if [[ "${AWS_REGION}" == "us-east-1" ]]; then
+  aws s3api create-bucket \
+    --bucket "${STATE_BUCKET}" \
+    --region "${AWS_REGION}"
+else
+  aws s3api create-bucket \
+    --bucket "${STATE_BUCKET}" \
+    --region "${AWS_REGION}" \
+    --create-bucket-configuration "LocationConstraint=${AWS_REGION}"
+fi
+
+aws s3api put-public-access-block \
+  --bucket "${STATE_BUCKET}" \
+  --public-access-block-configuration \
+    BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+aws s3api put-bucket-versioning \
+  --bucket "${STATE_BUCKET}" \
+  --versioning-configuration Status=Enabled
+
+aws s3api put-bucket-encryption \
+  --bucket "${STATE_BUCKET}" \
+  --server-side-encryption-configuration \
+    '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+```
+
+Verify the bucket configuration before supplying `STATE_BUCKET` to the
+deployment workflow:
+
+```bash
+aws s3api get-bucket-location --bucket "${STATE_BUCKET}"
+aws s3api get-bucket-versioning --bucket "${STATE_BUCKET}"
+aws s3api get-public-access-block --bucket "${STATE_BUCKET}"
+```
+
+Do not delete this bucket while any environment uses it. Its state keys are
+selected by application and environment, and bucket versioning provides a
+recovery path for accidental state changes.
+
 Do not place AWS credentials in repository files, examples, workflow inputs, or
 documentation.
 
