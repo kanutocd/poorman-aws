@@ -76,6 +76,12 @@ variable "build_fingerprint" {
   default     = "manual"
 }
 
+variable "build_run_id" {
+  description = "Unique run identifier used to find orphaned temporary Packer resources."
+  type        = string
+  default     = "manual"
+}
+
 variable "compose_version" {
   description = "Pinned Docker Compose plugin release installed in the AMI."
   type        = string
@@ -115,9 +121,10 @@ source "amazon-ebs" "application_backend" {
   imds_support = "v2.0"
 
   run_tags = {
-    Application = var.application_name
-    Component   = "backend-ami-builder"
-    ManagedBy   = "packer"
+    Application        = var.application_name
+    Component          = "backend-ami-builder"
+    ManagedBy          = "poorman-aws"
+    PoormanAwsBuildRun = var.build_run_id
   }
 
   tags = {

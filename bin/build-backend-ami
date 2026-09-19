@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repository_root="$(cd -- "$script_directory/.." && pwd)"
+packer_directory="$repository_root/backend/packer"
+aws_region=''
+application_name=''
+subnet_id=''
+ami_name_prefix=''
+build_fingerprint='manual'
+build_run_id="local-$(date +%s)-$$"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: bin/build-backend-ami --aws-region REGION --application-name NAME \
+  --subnet-id SUBNET_ID --ami-name-prefix PREFIX \
+  [--build-fingerprint FINGERPRINT] [--build-run-id ID]
+
+The builder egress CIDR is resolved at runtime. Set POORMAN_AMI_SSH_CIDR only
+for an advanced self-hosted-network override.
+EOF
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --aws-region) (($# >= 2)) || { usage; exit 2; }; aws_region="$2"; shift 2 ;;
+    --application-name) (($# >= 2)) || { usage; exit 2; }; application_name="$2"; shift 2 ;;
+    --subnet-id) (($# >= 2)) || { usage; exit 2; }; subnet_id="$2"; shift 2 ;;
+    --ami-name-prefix) (($# >= 2)) || { usage; exit 2; }; ami_name_prefix="$2"; shift 2 ;;
+    --build-fingerprint) (($# >= 2)) || { usage; exit 2; }; build_fingerprint="$2"; shift 2 ;;
+    --build-run-id) (($# >= 2)) || { usage; exit 2; }; build_run_id="$2"; shift 2 ;;
+    *) usage; exit 2 ;;
+  esac
+done
+
+[[ -n "$aws_region" && -n "$application_name" && -n "$subnet_id" && -n "$ami_name_prefix" ]] || {
+  usage
+  exit 2
+}
+
+command -v packer >/dev/null 2>&1 || { echo 'packer is required' >&2; exit 1; }
+command -v aws >/dev/null 2>&1 || { echo 'aws CLI is required' >&2; exit 1; }
+
+cleanup() {
+  bash "$script_directory/cleanup-packer-resources" \
+    --aws-region "$aws_region" --build-run-id "$build_run_id" ||
+    echo 'warning: temporary Packer resource cleanup requires follow-up' >&2
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+egress_cidr="$(POORMAN_AMI_SSH_CIDR="${POORMAN_AMI_SSH_CIDR:-}" \
+  bash "$script_directory/resolve-public-egress-cidr")"
+echo "Packer temporary builder SSH CIDR: $egress_cidr"
+
+cd "$packer_directory"
+packer init .
+packer fmt -check .
+packer validate . \
+  -var "aws_region=$aws_region" \
+  -var "application_name=$application_name" \
+  -var "subnet_id=$subnet_id" \
+  -var "ssh_cidr=$egress_cidr" \
+  -var "ami_name_prefix=$ami_name_prefix" \
+  -var "build_fingerprint=$build_fingerprint" \
+  -var "build_run_id=$build_run_id"
+packer build -on-error=cleanup -machine-readable -color=false . \
+  -var "aws_region=$aws_region" \
+  -var "application_name=$application_name" \
+  -var "subnet_id=$subnet_id" \
+  -var "ssh_cidr=$egress_cidr" \
+  -var "ami_name_prefix=$ami_name_prefix" \
+  -var "build_fingerprint=$build_fingerprint" \
+  -var "build_run_id=$build_run_id"

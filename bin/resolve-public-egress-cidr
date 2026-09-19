@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${POORMAN_AMI_SSH_CIDR:-}" ]]; then
+  printf '%s\n' "$POORMAN_AMI_SSH_CIDR"
+  exit 0
+fi
+
+command -v curl >/dev/null 2>&1 || {
+  echo 'curl is required to determine the public egress IPv4 address' >&2
+  exit 1
+}
+
+public_ip="$(curl -4fsSL --retry 4 --retry-delay 2 --retry-all-errors \
+  --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')"
+
+IFS=. read -r octet1 octet2 octet3 octet4 extra <<<"$public_ip"
+[[ -z "$extra" && "$octet1" =~ ^[0-9]+$ && "$octet2" =~ ^[0-9]+$ &&
+  "$octet3" =~ ^[0-9]+$ && "$octet4" =~ ^[0-9]+$ ]] || {
+  echo "invalid public egress IPv4 address: $public_ip" >&2
+  exit 1
+}
+for octet in "$octet1" "$octet2" "$octet3" "$octet4"; do
+  ((octet <= 255)) || {
+    echo "invalid public egress IPv4 address: $public_ip" >&2
+    exit 1
+  }
+done
+
+printf '%s/32\n' "$public_ip"

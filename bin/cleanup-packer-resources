@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: bin/cleanup-packer-resources --aws-region REGION --build-run-id ID
+EOF
+}
+
+aws_region=''
+build_run_id=''
+while (($# > 0)); do
+  case "$1" in
+    --aws-region) (($# >= 2)) || { usage; exit 2; }; aws_region="$2"; shift 2 ;;
+    --build-run-id) (($# >= 2)) || { usage; exit 2; }; build_run_id="$2"; shift 2 ;;
+    *) usage; exit 2 ;;
+  esac
+done
+
+[[ -n "$aws_region" && -n "$build_run_id" ]] || { usage; exit 2; }
+command -v aws >/dev/null 2>&1 || { echo 'aws CLI is required' >&2; exit 1; }
+
+retry_delays=(0 2 5 10)
+security_groups=''
+describe_succeeded=0
+for delay in "${retry_delays[@]}"; do
+  ((delay == 0)) || sleep "$delay"
+  if security_groups="$(aws ec2 describe-security-groups \
+    --region "$aws_region" \
+    --filters "Name=tag:PoormanAwsBuildRun,Values=$build_run_id" \
+              'Name=tag:ManagedBy,Values=poorman-aws' \
+    --query 'SecurityGroups[].GroupId' --output text 2>/dev/null)"; then
+    describe_succeeded=1
+    break
+  fi
+done
+
+((describe_succeeded == 1)) || {
+  echo "failed to find temporary Packer resources for build run: $build_run_id" >&2
+  exit 1
+}
+[[ -n "$security_groups" && "$security_groups" != None ]] || exit 0
+cleanup_failed=0
+for security_group_id in $security_groups; do
+  cleaned=0
+  for delay in 0 2 5 10; do
+    ((delay == 0)) || sleep "$delay"
+    if aws ec2 delete-security-group --region "$aws_region" \
+      --group-id "$security_group_id" >/dev/null 2>&1; then
+      echo "cleaned temporary Packer security group: $security_group_id"
+      cleaned=1
+      break
+    fi
+  done
+  if ((cleaned == 0)); then
+    echo "failed to clean temporary Packer security group: $security_group_id" >&2
+    cleanup_failed=1
+  fi
+done
+exit "$cleanup_failed"

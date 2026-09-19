@@ -31,8 +31,9 @@ on:
         required: true
         type: string
       ssh_cidr:
-        description: "Narrow CIDR allowed to reach the temporary builder"
-        required: true
+        description: "Advanced override; defaults to this runner's public egress CIDR"
+        required: false
+        default: ''
         type: string
       ami_name_prefix:
         description: "Immutable AMI name prefix"
@@ -71,7 +72,6 @@ jobs:
       APPLICATION_NAME: ${{ inputs.application_name }}
       AWS_REGION: ${{ inputs.aws_region }}
       PACKER_SUBNET_ID: ${{ inputs.subnet_id }}
-      PACKER_SSH_CIDR: ${{ inputs.ssh_cidr }}
       PACKER_AMI_NAME_PREFIX: ${{ inputs.ami_name_prefix }}
       TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
 
@@ -92,7 +92,6 @@ jobs:
             printf 'application_name=%s\n' "$APPLICATION_NAME"
             printf 'aws_region=%s\n' "$AWS_REGION"
             printf 'subnet_id=%s\n' "$PACKER_SUBNET_ID"
-            printf 'ssh_cidr=%s\n' "$PACKER_SSH_CIDR"
             printf 'ami_name_prefix=%s\n' "$PACKER_AMI_NAME_PREFIX"
             sha256sum ./*.hcl scripts/*
           )"
@@ -207,7 +206,6 @@ jobs:
       APPLICATION_NAME: ${{ inputs.application_name }}
       AWS_REGION: ${{ inputs.aws_region }}
       PACKER_SUBNET_ID: ${{ inputs.subnet_id }}
-      PACKER_SSH_CIDR: ${{ inputs.ssh_cidr }}
       PACKER_AMI_NAME_PREFIX: ${{ inputs.ami_name_prefix }}
       BUILD_FINGERPRINT: ${{ needs.guard.outputs.build_fingerprint }}
 
@@ -229,40 +227,24 @@ jobs:
       - name: Set up Packer
         uses: hashicorp/setup-packer@v3
 
-      - name: Initialize Packer plugins
-        working-directory: poorman-aws/backend/packer
-        run: packer init .
-
-      - name: Check Packer formatting
-        working-directory: poorman-aws/backend/packer
-        run: packer fmt -check .
-
-      - name: Validate Packer template
-        working-directory: poorman-aws/backend/packer
+      - name: Build AMI with shared cleanup adapter
+        working-directory: poorman-aws
+        env:
+          POORMAN_AMI_SSH_CIDR: ${{ inputs.ssh_cidr }}
         run: >-
-          packer validate .
-          -var "aws_region=${AWS_REGION}"
-          -var "application_name=${APPLICATION_NAME}"
-          -var "subnet_id=${PACKER_SUBNET_ID}"
-          -var "ssh_cidr=${PACKER_SSH_CIDR}"
-          -var "ami_name_prefix=${PACKER_AMI_NAME_PREFIX}"
-          -var "build_fingerprint=${BUILD_FINGERPRINT}"
-
-      - name: Build AMI
-        working-directory: poorman-aws/backend/packer
-        run: >-
-          packer build -machine-readable -color=false .
-          -var "aws_region=${AWS_REGION}"
-          -var "application_name=${APPLICATION_NAME}"
-          -var "subnet_id=${PACKER_SUBNET_ID}"
-          -var "ssh_cidr=${PACKER_SSH_CIDR}"
-          -var "ami_name_prefix=${PACKER_AMI_NAME_PREFIX}"
-          -var "build_fingerprint=${BUILD_FINGERPRINT}"
+          bash bin/build-backend-ami
+          --aws-region "${AWS_REGION}"
+          --application-name "${APPLICATION_NAME}"
+          --subnet-id "${PACKER_SUBNET_ID}"
+          --ami-name-prefix "${PACKER_AMI_NAME_PREFIX}"
+          --build-fingerprint "${BUILD_FINGERPRINT}"
+          --build-run-id "${GITHUB_RUN_ID}"
 
       - name: Extract AMI metadata
         id: ami
         working-directory: poorman-aws/backend/packer
         run: |
+          set -euo pipefail
           jq '{builds: [.builds[] | {name, artifact_id, builder_type}], custom_data}' manifest.json > manifest.redacted.json
           ami_id="$(jq -r '[.builds[].artifact_id | capture("(?<ami>ami-[0-9a-f]+)").ami] | first // empty' manifest.json)"
           [[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] || { echo 'Packer manifest did not contain a valid AMI ID' >&2; exit 1; }
@@ -270,11 +252,44 @@ jobs:
           printf '%s\n' "$BUILD_FINGERPRINT" > build-fingerprint.txt
           printf 'ami_id=%s\n' "$ami_id" >> "$GITHUB_OUTPUT"
 
+  cleanup:
+    name: Clean temporary Packer resources
+    needs: [guard, build]
+    if: always() && needs.guard.result == 'success'
+    runs-on: ubuntu-latest
+    environment: ami-build
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ inputs.aws_region }}
+    steps:
+      - name: Check out infrastructure repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.infrastructure_repository }}
+          ref: ${{ inputs.infrastructure_ref }}
+          path: poorman-aws
+
+      - name: Configure AWS credentials through OIDC
+        if: needs.guard.outputs.reuse != 'true'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}-cleanup
+
+      - name: Remove tagged temporary Packer security groups
+        if: needs.guard.outputs.reuse != 'true'
+        working-directory: poorman-aws
+        run: bash bin/cleanup-packer-resources --aws-region "${AWS_REGION}" --build-run-id "${GITHUB_RUN_ID}"
+
   publish:
     name: Publish AMI_ID to ${{ inputs.target_environment }}
-    needs: [guard, build]
+    needs: [guard, build, cleanup]
     if: >-
       always() && needs.guard.result == 'success' &&
+      needs.cleanup.result == 'success' &&
       (needs.guard.outputs.reuse == 'true' || needs.build.result == 'success')
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
