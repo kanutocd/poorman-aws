@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Changed AMI builder network scoping to determine the executing runner or
+  local build machine's public egress CIDR at runtime. Consumer onboarding no
+  longer persists an operator IP or asks for `ami_ssh_cidr`; generated callers
+  provide the subnet and name prefix while the shared build adapter passes the
+  resolved CIDR only to Packer. The CIDR is excluded from AMI fingerprinting,
+  and the adapter plus an always-run workflow cleanup pass remove tagged
+  temporary security groups. The tags also make interrupted-run resources
+  identifiable for manual cleanup; a scheduled orphan-resource janitor is not
+  included yet. An explicit workflow override remains available for exceptional
+  self-hosted networking.
+
 ## 0.1.0 - 2026-9-19
 
 - Extended the consumer wrapper's first-run and resume flow with explicit

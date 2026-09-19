@@ -42,16 +42,17 @@ For other operating systems or installation methods, use the
 
 ## Local build
 
-Install Packer, configure AWS credentials, and select a public subnet and
-operator CIDR. The CIDR must be narrow; it is used only by the temporary
-builder security group.
+Install Packer, configure AWS credentials, and select a public subnet. The
+temporary builder security group is restricted automatically to the current
+build machine's public egress IPv4 address.
 
 ```bash
 cd backend/packer
 cp example.pkrvars.hcl local.pkrvars.hcl
 ```
 
-then replace `subnet_id` and `ssh_cidr` in `local.pkrvars.hcl`.
+then replace `subnet_id` in `local.pkrvars.hcl`. The shared egress resolver
+supplies `ssh_cidr` at build time.
 For the Packer build, use an existing public subnet—preferably the default VPC
 subnet in the chosen region, such as `ap-southeast-1`.
 Find one using the AWS CLI:
@@ -81,28 +82,26 @@ Sample aws cli output:
 Use a subnet in the same region and Availability Zone as the build, such as
 `ap-southeast-1a`.
 
-Get your public IP:
+Then build through the shared Poorman adapter from the repository root:
 
 ```bash
-curl -4 https://checkip.amazonaws.com
+cd /path/to/poorman-aws
+bash bin/build-backend-ami \
+  --aws-region ap-southeast-1 \
+  --application-name application \
+  --subnet-id subnet-... \
+  --ami-name-prefix application-backend
 ```
 
-Then use the ipv4 public IP address as the `ssh_cidr` block value. e.g `221.121.102.30`
-
-then the `ssh_cidr` value would be: `221.121.102.30/32`
-
-Then finally initialize, validate the variable file, and `packer build`:
-
-```bash
-packer init .
-packer fmt -check .
-packer validate -var-file=local.pkrvars.hcl .
-packer build -var-file=local.pkrvars.hcl .
-```
-
-Read the resulting AMI ID from `manifest.json`, review it, and place it in the
-selected OpenTofu environment's `ami_id` variable. Do not commit
-`local.pkrvars.hcl` or `manifest.json`.
+The adapter resolves the current machine's public egress CIDR, passes it only
+to the temporary Packer security group, and invokes the shared cleanup script
+through an `EXIT` trap on success, failure, or normal interruption. Packer's
+own `-on-error=cleanup` remains enabled as a second cleanup layer. The workflow
+calls this same adapter after its reuse guard, so local and CI builds share the
+same validation, runtime network scoping, and cleanup behavior. Read the
+resulting AMI ID from `manifest.json`, review it, and place it in the selected
+OpenTofu environment's `ami_id` variable. Do not commit `local.pkrvars.hcl` or
+`manifest.json`.
 
 ## CI build
 

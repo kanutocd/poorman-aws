@@ -23,11 +23,13 @@ Required inputs are:
 - `application_name`;
 - `aws_region`;
 - `subnet_id` for the temporary public builder; and
-- `ssh_cidr`, restricted to the operator's temporary builder access range.
+- An optional `ssh_cidr` override for unusual runner networking; by default the
+  shared Poorman build adapter determines the current builder's public egress
+  CIDR at build runtime.
 
 `ami_name_prefix` is also required. The wrapper-generated consumer caller
-provides defaults for `subnet_id`, `ssh_cidr`, and `ami_name_prefix` from the
-consumer onboarding configuration; each value remains editable at dispatch.
+provides defaults for `subnet_id` and `ami_name_prefix` from the consumer
+onboarding configuration; the runner egress CIDR is determined at runtime.
 The `aws_role_arn` secret must be a temporary, narrowly scoped AMI-build role.
 The workflow runs in the protected
 `ami-build` environment and does not build an application image.
@@ -36,11 +38,15 @@ The wrapper equivalent is:
 
 ```bash
 bin/poorman-aws --dry-run ami build \
-  --subnet-id SUBNET_ID \
-  --ssh-cidr BUILDER_CIDR
+  --subnet-id SUBNET_ID
 ```
 
 Review the dispatch inputs and then remove `--dry-run` to start the build.
+The runtime CIDR is used only for temporary builder access and is excluded
+from the AMI fingerprint, so changing runner addresses does not force a new
+AMI. The shared adapter uses an `EXIT` cleanup trap locally and the workflow
+adds an always-run tagged-resource cleanup job; Packer also runs with
+`-on-error=cleanup`.
 
 ## Runtime parameters
 

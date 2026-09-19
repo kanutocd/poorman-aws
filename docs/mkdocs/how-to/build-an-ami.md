@@ -13,15 +13,20 @@ the required public subnet and temporary builder CIDR:
 
 ```bash
 bin/poorman-aws --dry-run ami build \
-  --subnet-id SUBNET_ID \
-  --ssh-cidr BUILDER_CIDR
+  --subnet-id SUBNET_ID
 ```
 
 Review the generated workflow inputs and then repeat without `--dry-run` to
 dispatch the build. The wrapper requires an immutable infrastructure ref and
 does not accept `main` or `master` for operational commands.
 
-The reusable AMI workflow is idempotency-guarded. Before starting Packer, it
+The reusable AMI workflow determines the GitHub runner's public egress IPv4
+address at build runtime and restricts the temporary builder to that `/32`.
+The same Poorman-owned `bin/build-backend-ami` adapter is used for local builds
+and the workflow's build job. Its `EXIT` trap invokes the shared cleanup script
+on success, failure, and normal interruption; the workflow also performs a
+tag-based cleanup pass and Packer uses `-on-error=cleanup`. The
+reusable AMI workflow is idempotency-guarded. Before starting Packer, it
 checks the canonical AMI artifact and the selected environment's `AMI_ID` and
 `AMI_BUILD_FINGERPRINT` variables. It reuses a candidate only when the AWS AMI
 is still `available` and carries the requested build fingerprint. Stale,
@@ -31,10 +36,11 @@ Discovery and validation use bounded retries with backoff for transient GitHub,
 network, AWS API, and AMI-pending conditions. Fingerprint mismatches and
 confirmed invalid or terminal AMI states are not retried. Packer itself is not
 blindly retried, avoiding duplicate billable builders after an uncertain build
-outcome.
+outcome. The runtime CIDR is excluded from the build fingerprint, so a changed
+runner IP does not cause a duplicate AMI build.
 Packer is installed only after the reuse guard decides that a build is needed.
-The workflow is structured as three jobs: guard, conditional build, and
-publish. This keeps the Packer condition at the job boundary rather than
+The workflow is structured as four jobs: guard, conditional build, cleanup,
+and publish. This keeps the Packer condition at the job boundary rather than
 repeating it on every Packer step.
 
 ## Validate the Packer profile locally

@@ -27,7 +27,6 @@ Required inputs:
 | `ssm_parameter_path` | Runtime parameter path. |
 | `route53_zone_name` | Existing public Route 53 hosted zone. |
 | `ami_subnet_id` | Public subnet used by the idempotent AMI build-or-reuse prerequisite. |
-| `ami_ssh_cidr` | Temporary AMI builder SSH CIDR. |
 | `ami_name_prefix` | AMI name prefix used for the build fingerprint and image metadata. |
 
 Required secret:
@@ -70,7 +69,6 @@ jobs:
       ssm_parameter_path: /example-app/staging
       route53_zone_name: example.test
       ami_subnet_id: subnet-0123456789abcdef0
-      ami_ssh_cidr: 203.0.113.10/32
       ami_name_prefix: example-app-backend
       apply: false
     secrets:
