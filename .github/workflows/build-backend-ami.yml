@@ -47,7 +47,7 @@ on:
     secrets:
       aws_role_arn:
         description: "IAM role allowed to build the AMI"
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -105,7 +105,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-to-assume: ${{ secrets.aws_role_arn || secrets.AWS_ROLE_ARN }}
           role-session-name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}
 
       - name: Reuse a matching live AMI when available
@@ -232,7 +232,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-to-assume: ${{ secrets.aws_role_arn || secrets.AWS_ROLE_ARN }}
           role-session-name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}-build
 
       - name: Set up Packer
@@ -287,7 +287,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-to-assume: ${{ secrets.aws_role_arn || secrets.AWS_ROLE_ARN }}
           role-session-name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}-cleanup
 
       - name: Remove tagged temporary Packer security groups
@@ -335,7 +335,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ inputs.aws_region }}
-          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-to-assume: ${{ secrets.aws_role_arn || secrets.AWS_ROLE_ARN }}
           role-session-name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}-publish
 
       - name: Persist AMI metadata in SSM Parameter Store

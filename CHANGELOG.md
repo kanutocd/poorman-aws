@@ -10,6 +10,9 @@ All notable changes to this project are documented in this file.
   optionally mirror the outputs to consumer environment variables through
   `POORMAN_ENVIRONMENT_ADMIN_TOKEN`; the reusable AMI workflow no longer
   requires that GitHub-management token.
+- Fixed nested AMI OIDC credential resolution by using the protected
+  `ami-build` environment's `AWS_ROLE_ARN`; environment-scoped secrets are not
+  passed through the caller workflow boundary.
 - Added the temporary EC2 key-pair create/delete permissions required by the
   Packer AMI builder to the narrowly scoped AMI-build role policy.
 - Added the temporary EC2 instance lifecycle permissions Packer needs to stop

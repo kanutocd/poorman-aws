@@ -950,9 +950,7 @@ jobs:
       route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME || '__ZONE__' }}
       route53_zone_id: ${{ vars.ROUTE53_ZONE_ID || '__ZONE_ID__' }}
       tags_json: '{}'
-    secrets:
-      aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
-      ami_build_role_arn: ${{ secrets.AWS_AMI_ROLE_ARN }}
+    secrets: inherit
 EOF
 )"
   deploy="$(cat <<'EOF'

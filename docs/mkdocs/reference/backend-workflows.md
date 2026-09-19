@@ -34,7 +34,10 @@ Required secret:
 | Secret | Meaning |
 | --- | --- |
 | `aws_role_arn` | IAM role allowed to manage the selected environment. |
-| `ami_build_role_arn` | Dedicated `ami-build` IAM role used only when no matching live AMI exists. |
+
+The nested AMI job uses the `AWS_ROLE_ARN` secret from its own protected
+`ami-build` environment. It does not require an AMI role secret to cross the
+caller workflow boundary.
 
 Before planning, the workflow calls `build-backend-ami.yml`. That reusable
 workflow checks the canonical artifact, SSM Parameter Store, and selected

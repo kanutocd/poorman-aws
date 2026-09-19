@@ -107,10 +107,7 @@ on:
     secrets:
       aws_role_arn:
         description: "IAM role allowed to manage this environment"
-        required: true
-      ami_build_role_arn:
-        description: "Dedicated IAM role allowed to build or reuse the host AMI"
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -173,8 +170,7 @@ jobs:
       subnet_id: ${{ inputs.ami_subnet_id }}
       ami_name_prefix: ${{ inputs.ami_name_prefix }}
       target_environment: ${{ inputs.environment }}
-    secrets:
-      aws_role_arn: ${{ secrets.ami_build_role_arn }}
+    secrets: inherit
 
   plan:
     name: Plan ${{ inputs.environment }}
@@ -233,7 +229,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-to-assume: ${{ secrets.aws_role_arn || secrets.AWS_ROLE_ARN }}
           role-session-name: ${{ inputs.application_name }}-infrastructure-${{ inputs.environment }}-${{ github.run_id }}
 
       - name: Initialize environment state
