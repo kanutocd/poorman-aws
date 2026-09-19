@@ -13,6 +13,7 @@ touch "$temporary_directory/consumer/backend/Dockerfile"
 cat >"$temporary_directory/consumer/.poorman-aws.yml" <<'YAML'
 version: 1
 application_name: frontend-fixture
+deployment_shape: backend-and-frontend
 infrastructure_ref: v1.5.4
 aws:
   region: us-east-2
@@ -20,12 +21,12 @@ aws:
   route53_zone_name: example.test
   state_bucket: frontend-fixture-state
 backend:
-  parameter_path: /frontend-fixture/staging
+  ssm_parameters_path: /frontend-fixture/staging
 frontend:
   directory: frontend
   build_command: pnpm build
-  deploy_command: SST_TELEMETRY_DISABLED=1 pnpm exec sst deploy --stage "$ENVIRONMENT"
-  remove_command: SST_TELEMETRY_DISABLED=1 pnpm exec sst remove --stage "$ENVIRONMENT"
+  deploy_command: bash poorman-aws/bin/frontend-adapter deploy
+  remove_command: bash poorman-aws/bin/frontend-adapter remove
   output_entrypoint: dist/index.html
   frontend_url: https://app.example.test
   api_url: https://api.example.test
@@ -36,6 +37,7 @@ frontend:
   aws_role_secret: AWS_FRONTEND_ROLE_ARN
 YAML
 
+export XDG_STATE_HOME="$temporary_directory/state"
 pushd "$temporary_directory/consumer" >/dev/null
 config_output="$($wrapper config show)"
 grep -Fq 'frontend.directory' <<<"$config_output"
@@ -63,9 +65,11 @@ touch "$temporary_directory/onboard/backend/Caddyfile"
 touch "$temporary_directory/onboard/backend/Dockerfile"
 (
   cd "$temporary_directory/onboard"
-  "$wrapper" --non-interactive onboard \
+  "$wrapper" --consumer-path . --non-interactive onboard \
     --application-name onboard-frontend \
-    --infrastructure-ref v1.5.4 \
+    --deployment-shape backend-and-frontend \
+    --ami-subnet-id subnet-0123456789abcdef0 \
+    --ami-ssh-cidr 203.0.113.10/32 \
     --availability-zone us-east-2a \
     --route53-zone-name example.test \
     --state-bucket onboard-frontend-state \
@@ -77,7 +81,9 @@ touch "$temporary_directory/onboard/backend/Dockerfile"
   test -f .github/workflows/poorman-aws-frontend-deploy.yml
   test -f .github/workflows/poorman-aws-frontend-rollback.yml
   test -f .github/workflows/poorman-aws-frontend-lifecycle.yml
-  grep -Fq 'uses: kanutocd/poorman-aws/.github/workflows/deploy-frontend.yml@v1.5.4' .github/workflows/poorman-aws-frontend-deploy.yml
+  grep -Fq 'uses: kanutocd/poorman-aws/.github/workflows/deploy-frontend.yml@v0.1.0' .github/workflows/poorman-aws-frontend-deploy.yml
+  grep -Fq 'deploy_command: bash poorman-aws/bin/frontend-adapter deploy' .github/workflows/poorman-aws-frontend-deploy.yml
+  ! grep -Fq 'pnpm exec sst' .github/workflows/poorman-aws-frontend-deploy.yml
   grep -Fq 'frontend_hostname:' .github/workflows/poorman-aws-frontend-lifecycle.yml
   ! grep -R -E 'AWS_SECRET_ACCESS_KEY=|API_KEY=|TOKEN=' .github/workflows/poorman-aws-frontend-*.yml
 )

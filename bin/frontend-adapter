@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+[[ "$action" == deploy || "$action" == remove ]] || {
+  echo 'usage: frontend-sst deploy|remove' >&2
+  exit 2
+}
+
+environment="${ENVIRONMENT:?ENVIRONMENT is required}"
+frontend_directory="${FRONTEND_DIRECTORY:-frontend}"
+if [[ "$frontend_directory" != /* ]]; then
+  frontend_directory="$PWD/$frontend_directory"
+fi
+
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+infrastructure_directory="$(cd "$script_directory/../frontend" && pwd)"
+output_entrypoint="${FRONTEND_OUTPUT_ENTRYPOINT:-dist/index.html}"
+output_directory="$(dirname "$output_entrypoint")"
+
+export CONSUMER_FRONTEND_DIRECTORY="$frontend_directory"
+export FRONTEND_OUTPUT_DIRECTORY="$output_directory"
+cd "$infrastructure_directory"
+exec pnpm dlx sst@4.17.1 "$action" --stage "$environment"

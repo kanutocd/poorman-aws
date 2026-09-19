@@ -36,6 +36,10 @@ on:
         description: "Command that builds the frontend, run inside frontend_directory"
         required: true
         type: string
+      frontend_hostname:
+        description: "Optional custom frontend hostname"
+        required: false
+        type: string
       deploy_command:
         description: "Command that deploys the frontend, run inside frontend_directory"
         required: true
@@ -93,6 +97,7 @@ jobs:
       FRONTEND_DIRECTORY: ${{ inputs.frontend_directory }}
       FRONTEND_BUILD_COMMAND: ${{ inputs.build_command }}
       FRONTEND_DEPLOY_COMMAND: ${{ inputs.deploy_command }}
+      FRONTEND_HOSTNAME: ${{ inputs.frontend_hostname }}
       API_BASE_URL: ${{ inputs.api_base_url }}
       FRONTEND_CERTIFICATE_ARN: ${{ inputs.frontend_certificate_arn }}
       FRONTEND_URL: ${{ inputs.frontend_url }}
