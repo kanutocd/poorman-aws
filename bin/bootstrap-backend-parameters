@@ -19,7 +19,7 @@ EOF
 environment=""
 environment_file=""
 application_name="${APPLICATION_NAME:-application}"
-parameter_path="${SSM_PARAMETER_PATH:-}"
+ssm_parameter_path="${SSM_PARAMETER_PATH:-}"
 clear_parameter=""
 non_secret_parameters=()
 allow_type_change=false
@@ -39,9 +39,9 @@ while (($# > 0)); do
       (($# >= 2)) || { echo "--application-name requires a value" >&2; exit 1; }
       shift; application_name="$1"
       ;;
-    --parameter-path)
-      (($# >= 2)) || { echo "--parameter-path requires a path" >&2; exit 1; }
-      shift; parameter_path="$1"
+    --ssm-parameter-path)
+      (($# >= 2)) || { echo "$1 requires a path" >&2; exit 1; }
+      shift; ssm_parameter_path="$1"
       ;;
     --clear-parameter)
       (($# >= 2)) || { echo "--clear-parameter requires a name" >&2; exit 1; }
@@ -74,13 +74,13 @@ if [[ -z "$clear_parameter" && ! -r "$environment_file" ]]; then
 fi
 
 aws_region="${AWS_REGION:?AWS_REGION is required}"
-parameter_path="${parameter_path:-/$application_name/$environment}"
+ssm_parameter_path="${ssm_parameter_path:-/$application_name/$environment}"
 
 [[ "$application_name" =~ ^[a-z][a-z0-9-]{1,32}$ ]] || {
   echo "application name must be 2-33 lowercase letters, numbers, or hyphens" >&2
   exit 1
 }
-[[ "$parameter_path" =~ ^/[^/].*[^/]$ ]] || {
+[[ "$ssm_parameter_path" =~ ^/[^/].*[^/]$ ]] || {
   echo "parameter path must start and end with a non-slash path component" >&2
   exit 1
 }
@@ -90,11 +90,11 @@ if [[ -n "$clear_parameter" ]]; then
     echo "parameter name must be an uppercase environment variable name" >&2
     exit 1
   }
-  echo "$parameter_path/$clear_parameter (delete if present)"
+  echo "$ssm_parameter_path/$clear_parameter (delete if present)"
   if [[ "$apply" == true ]]; then
     aws ssm delete-parameter --region "$aws_region" \
-      --name "$parameter_path/$clear_parameter" --no-cli-pager >/dev/null 2>&1 || true
-    echo "Cleared $parameter_path/$clear_parameter"
+      --name "$ssm_parameter_path/$clear_parameter" --no-cli-pager >/dev/null 2>&1 || true
+    echo "Cleared $ssm_parameter_path/$clear_parameter"
   else
     echo "Dry run only. Re-run with --apply to clear the parameter."
   fi
@@ -165,20 +165,20 @@ done
 for parameter in "${parameters[@]}"; do
   name="${parameter%%$'\t'*}"
   type="$(parameter_type "$name")"
-  echo "$parameter_path/$name ($type)"
+  echo "$ssm_parameter_path/$name ($type)"
   if [[ "$apply" == true ]]; then
     value="${parameter#*$'\t'}"
     existing_type=""
     if existing_type="$(aws ssm get-parameter --region "$aws_region" \
-      --name "$parameter_path/$name" --query 'Parameter.Type' --output text \
+      --name "$ssm_parameter_path/$name" --query 'Parameter.Type' --output text \
       --no-cli-pager 2>/dev/null)"; then
       if [[ -n "$existing_type" && "$existing_type" != 'None' && "$existing_type" != "$type" && "$allow_type_change" != true ]]; then
-        echo "existing parameter type for $parameter_path/$name is $existing_type; pass --allow-type-change to migrate it" >&2
+        echo "existing parameter type for $ssm_parameter_path/$name is $existing_type; pass --allow-type-change to migrate it" >&2
         exit 1
       fi
     fi
     aws ssm put-parameter --region "$aws_region" \
-      --name "$parameter_path/$name" --type "$type" --value "$value" \
+      --name "$ssm_parameter_path/$name" --type "$type" --value "$value" \
       --overwrite --no-cli-pager >/dev/null
   fi
 done
@@ -186,5 +186,5 @@ done
 if [[ "$apply" != true ]]; then
   echo "Dry run only. Re-run with --apply to write these parameters."
 else
-  echo "Updated runtime parameters under $parameter_path"
+  echo "Updated runtime parameters under $ssm_parameter_path"
 fi

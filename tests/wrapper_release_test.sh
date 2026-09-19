@@ -14,7 +14,7 @@ aws:
   region: us-east-2
   state_bucket: parity-state
 backend:
-  ssm_parameters_path: /parity/staging
+  ssm_parameter_path: /parity/staging
 YAML
 
 pushd "$temporary_dir/consumer" >/dev/null

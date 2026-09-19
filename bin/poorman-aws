@@ -297,7 +297,7 @@ allowed_key() {
     version|application_name|deployment_shape|infrastructure_repository|infrastructure_ref|\
     aws.region|aws.state_bucket|aws.availability_zone|aws.route53_zone_name|\
     aws.route53_zone_id|ami.subnet_id|ami.ssh_cidr|ami.name_prefix|\
-    backend.ssm_parameters_path|backend.ssm_session_kms_key_arn|backend.compose_file|\
+    backend.ssm_parameter_path|backend.ssm_session_kms_key_arn|backend.compose_file|\
     backend.caddy_file|backend.build_context|backend.dockerfile|\
     backend.supplemental_files|defaults.target_environment|defaults.instance_type|defaults.root_volume_size_gib|\
     defaults.data_volume_size_gib|defaults.release_retention_days|\
@@ -334,7 +334,7 @@ allowed = {
     "infrastructure_ref", "aws.region", "aws.state_bucket",
     "aws.availability_zone", "aws.route53_zone_name", "aws.route53_zone_id",
     "ami.subnet_id", "ami.ssh_cidr", "ami.name_prefix",
-    "backend.ssm_parameters_path", "backend.ssm_session_kms_key_arn", "backend.parameter_path", "backend.compose_file", "backend.caddy_file",
+    "backend.ssm_parameter_path", "backend.ssm_session_kms_key_arn", "backend.compose_file", "backend.caddy_file",
     "backend.build_context", "backend.dockerfile", "backend.supplemental_files",
     "defaults.target_environment", "defaults.instance_type", "defaults.root_volume_size_gib",
     "defaults.data_volume_size_gib", "defaults.release_retention_days",
@@ -368,8 +368,6 @@ def flatten(value, prefix=""):
 for key, value in flatten(document):
     if key not in allowed:
         raise SystemExit(f"unsupported configuration key: {key}")
-    if key == "backend.parameter_path":
-        key = "backend.ssm_parameters_path"
     print(f"{key}\t{value}")
 PY
     return
@@ -381,9 +379,8 @@ allowed = %w[
   version application_name deployment_shape infrastructure_repository infrastructure_ref
   aws.region aws.state_bucket aws.availability_zone aws.route53_zone_name
   aws.route53_zone_id ami.subnet_id ami.ssh_cidr ami.name_prefix
-  backend.ssm_parameters_path backend.ssm_session_kms_key_arn backend.compose_file
+  backend.ssm_parameter_path backend.ssm_session_kms_key_arn backend.compose_file
   backend.caddy_file backend.build_context backend.dockerfile backend.supplemental_files
-  backend.parameter_path
   defaults.target_environment defaults.instance_type defaults.root_volume_size_gib defaults.data_volume_size_gib
   defaults.release_retention_days defaults.enable_data_volume_backups
   defaults.backup_kms_key_arn defaults.retain_data_volume defaults.retain_eip
@@ -408,7 +405,6 @@ flatten = lambda do |value, prefix = '', &block|
 end
 flatten.call(document) do |key, value|
   abort "unsupported configuration key: #{key}" unless allowed.include?(key)
-  key = 'backend.ssm_parameters_path' if key == 'backend.parameter_path'
   puts "#{key}\t#{value}"
 end
 RUBY
@@ -431,7 +427,7 @@ load_defaults() {
   set_value ami.subnet_id '' default
   set_value ami.ssh_cidr '' default
   set_value ami.name_prefix '' default
-  set_value backend.ssm_parameters_path /application/staging default
+  set_value backend.ssm_parameter_path /application/staging default
   set_value backend.ssm_session_kms_key_arn '' default
   set_value backend.compose_file backend/compose.production.yaml default
   set_value backend.caddy_file backend/Caddyfile default
@@ -547,7 +543,7 @@ parse_args() {
       --infrastructure-ref) key=infrastructure_ref ;;
       --aws-region) key=aws.region ;;
       --state-bucket) key=aws.state_bucket ;;
-      --parameter-path|--ssm-parameters-path) key=backend.ssm_parameters_path ;;
+      --ssm-parameter-path) key=backend.ssm_parameter_path ;;
       --ssm-session-kms-key-arn) key=backend.ssm_session_kms_key_arn ;;
       --compose-file) key=backend.compose_file ;;
       --caddy-file) key=backend.caddy_file ;;
@@ -592,8 +588,8 @@ validate_values() {
   fi
   [[ -z "${values[aws.route53_zone_name]}" || "${values[aws.route53_zone_name]}" =~ ^[A-Za-z0-9.-]+$ ]] ||
     die 'aws.route53_zone_name is invalid'
-  [[ "${values[backend.ssm_parameters_path]}" =~ ^/[^/].*[^/]$ ]] ||
-    die 'backend.ssm_parameters_path must be an absolute SSM path'
+  [[ "${values[backend.ssm_parameter_path]}" =~ ^/[^/].*[^/]$ ]] ||
+    die 'backend.ssm_parameter_path must be an absolute SSM path'
   [[ -z "${values[backend.ssm_session_kms_key_arn]}" || "${values[backend.ssm_session_kms_key_arn]}" =~ ^arn:[^:]+:kms:[^:]+:[^:]+:key/.+$ ]] ||
     die 'backend.ssm_session_kms_key_arn must be a KMS key ARN'
   [[ "${values[defaults.instance_type]}" =~ ^[a-z0-9.-]+$ ]] || die 'instance_type is invalid'
@@ -798,7 +794,7 @@ require_onboarding_values() {
   prompt_value aws.route53_zone_name 'Route 53 zone name' true "$route53_example"
   infer_api_url
   prompt_value aws.state_bucket 'Encrypted remote state bucket' true
-  prompt_value backend.ssm_parameters_path 'SSM parameters path'
+  prompt_value backend.ssm_parameter_path 'SSM parameter path'
   prompt_value backend.compose_file 'Consumer Compose file'
   prompt_value backend.caddy_file 'Consumer Caddyfile'
   prompt_value backend.build_context 'Docker build context'
@@ -808,7 +804,7 @@ require_onboarding_values() {
   for key in application_name infrastructure_repository infrastructure_ref aws.region aws.availability_zone \
     aws.route53_zone_name aws.state_bucket \
     ami.subnet_id ami.name_prefix \
-    backend.ssm_parameters_path backend.ssm_session_kms_key_arn backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
+    backend.ssm_parameter_path backend.ssm_session_kms_key_arn backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
     [[ "${values[$key]}" != *'|'* ]] || die "$key cannot contain the template delimiter |"
   done
   for key in frontend.directory frontend.build_command frontend.deploy_command frontend.remove_command \
@@ -845,7 +841,7 @@ render_workflow() {
   template="${template//__AMI_SUBNET_ID__/${values[ami.subnet_id]}}"
   template="${template//__AMI_NAME_PREFIX__/${values[ami.name_prefix]}}"
   template="${template//__STATE_BUCKET__/${values[aws.state_bucket]}}"
-  template="${template//__PARAMETER_PATH__/${values[backend.ssm_parameters_path]}}"
+  template="${template//__SSM_PARAMETER_PATH__/${values[backend.ssm_parameter_path]}}"
   template="${template//__SSM_SESSION_KMS_KEY_ARN__/${values[backend.ssm_session_kms_key_arn]}}"
   template="${template//__COMPOSE__/${values[backend.compose_file]}}"
   template="${template//__CADDY__/${values[backend.caddy_file]}}"
@@ -896,7 +892,7 @@ ami:
   subnet_id: ${values[ami.subnet_id]}
   name_prefix: ${values[ami.name_prefix]}
 backend:
-  ssm_parameters_path: ${values[backend.ssm_parameters_path]}
+  ssm_parameter_path: ${values[backend.ssm_parameter_path]}
   ssm_session_kms_key_arn: ${values[backend.ssm_session_kms_key_arn]}
   compose_file: ${values[backend.compose_file]}
   caddy_file: ${values[backend.caddy_file]}
@@ -983,7 +979,7 @@ jobs:
       backup_kms_key_arn: ${{ vars.BACKUP_KMS_KEY_ARN || '__BACKUP_KMS_KEY_ARN__' }}
       ami_subnet_id: __AMI_SUBNET_ID__
       ami_name_prefix: __AMI_NAME_PREFIX__
-      ssm_parameter_path: __PARAMETER_PATH__
+      ssm_parameter_path: __SSM_PARAMETER_PATH__
       ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN || '__SSM_SESSION_KMS_KEY_ARN__' }}
       route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME || '__ZONE__' }}
       route53_zone_id: ${{ vars.ROUTE53_ZONE_ID || '__ZONE_ID__' }}
@@ -1204,7 +1200,7 @@ jobs:
       release_retention_days: ${{ vars.RELEASE_RETENTION_DAYS || __RELEASE_RETENTION_DAYS__ }}
       enable_data_volume_backups: ${{ vars.ENABLE_DATA_VOLUME_BACKUPS || __ENABLE_BACKUPS__ }}
       backup_kms_key_arn: ${{ vars.BACKUP_KMS_KEY_ARN || '__BACKUP_KMS_KEY_ARN__' }}
-      ssm_parameter_path: __PARAMETER_PATH__
+      ssm_parameter_path: __SSM_PARAMETER_PATH__
       ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN || '__SSM_SESSION_KMS_KEY_ARN__' }}
       route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME || '__ZONE__' }}
       route53_zone_id: ${{ vars.ROUTE53_ZONE_ID || '__ZONE_ID__' }}
@@ -1255,7 +1251,7 @@ jobs:
       apply: ${{ inputs.apply }}
       clear_parameter: ${{ inputs.clear_parameter }}
       aws_region: __REGION__
-      parameter_path: __PARAMETER_PATH__
+      ssm_parameter_path: __SSM_PARAMETER_PATH__
       non_secret_parameters: ${{ vars.NON_SECRET_PARAMETERS }}
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
@@ -1600,7 +1596,7 @@ parameters_adapter() {
     local parameter_args=(
       --environment "$environment"
       --application-name "${values[application_name]}"
-      --parameter-path "${values[backend.ssm_parameters_path]}"
+      --ssm-parameter-path "${values[backend.ssm_parameter_path]}"
       --from-env-file "$command_env_file"
     )
     local parameter

@@ -23,7 +23,7 @@ aws:
   region: us-east-2
   state_bucket: fixture-state
 backend:
-  ssm_parameters_path: /fixture/staging
+  ssm_parameter_path: /fixture/staging
 defaults:
   instance_type: t4g.small
   root_volume_size_gib: 16

@@ -16,6 +16,9 @@ All notable changes to this project are documented in this file.
   verification input from being blank when no `API_URL` variable is configured.
 - Improved backend release failure diagnostics by printing the remote SSM
   activation command's standard output and error content.
+- Standardized the backend-parameter workflow contract on
+  `ssm_parameter_path` and `SSM_PARAMETER_PATH`, while retaining
+  `--ssm-parameter-path` as the only supported CLI spelling.
 - Added a guarded pre-plan repair for tainted retained EIPs. The reusable
   infrastructure workflow now verifies the live allocation and ownership tags
   before untainting only the matching OpenTofu state entry from the raw state,

@@ -32,7 +32,7 @@ on:
         description: AWS region
         required: true
         type: string
-      parameter_path:
+      ssm_parameter_path:
         description: SSM parameter path
         required: true
         type: string
@@ -85,7 +85,7 @@ jobs:
       - name: Bootstrap protected parameters
         env:
           APPLICATION_NAME: ${{ inputs.application_name }}
-          PARAMETER_PATH: ${{ inputs.parameter_path }}
+          SSM_PARAMETER_PATH: ${{ inputs.ssm_parameter_path }}
           NON_SECRET_PARAMETERS: ${{ inputs.non_secret_parameters }}
           APPLY_PARAMETERS: ${{ inputs.apply }}
           CLEAR_PARAMETER: ${{ inputs.clear_parameter }}
@@ -96,7 +96,7 @@ jobs:
           arguments=(
             --environment "${{ inputs.environment }}"
             --application-name "$APPLICATION_NAME"
-            --parameter-path "$PARAMETER_PATH"
+            --ssm-parameter-path "$SSM_PARAMETER_PATH"
           )
           if [[ -n "$CLEAR_PARAMETER" ]]; then
             arguments+=(--clear-parameter "$CLEAR_PARAMETER")

@@ -56,7 +56,7 @@ Workflow: `.github/workflows/bootstrap-backend-parameters.yml`
 Use this workflow to preview or write application runtime parameters to SSM
 Parameter Store. Required inputs are `infrastructure_repository`, immutable
 `infrastructure_ref`, `application_name`, `environment`, `aws_region`, and
-`parameter_path`. Set `apply: true` only after reviewing the parameter names
+`ssm_parameter_path`. Set `apply: true` only after reviewing the parameter names
 and target environment.
 
 The required `aws_role_arn` secret must be allowed to manage the selected SSM

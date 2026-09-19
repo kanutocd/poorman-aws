@@ -21,7 +21,7 @@ aws:
   route53_zone_name: example.test
   state_bucket: frontend-fixture-state
 backend:
-  ssm_parameters_path: /frontend-fixture/staging
+  ssm_parameter_path: /frontend-fixture/staging
 frontend:
   directory: frontend
   build_command: pnpm build
