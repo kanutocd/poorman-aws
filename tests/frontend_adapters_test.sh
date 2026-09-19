@@ -69,7 +69,6 @@ touch "$temporary_directory/onboard/backend/Dockerfile"
     --application-name onboard-frontend \
     --deployment-shape backend-and-frontend \
     --ami-subnet-id subnet-0123456789abcdef0 \
-    --ami-ssh-cidr 203.0.113.10/32 \
     --availability-zone us-east-2a \
     --route53-zone-name example.test \
     --state-bucket onboard-frontend-state \

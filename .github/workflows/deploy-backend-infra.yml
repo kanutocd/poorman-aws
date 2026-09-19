@@ -100,10 +100,6 @@ on:
         description: "Public subnet for the idempotent AMI build or reuse check"
         required: true
         type: string
-      ami_ssh_cidr:
-        description: "Temporary AMI builder SSH CIDR"
-        required: true
-        type: string
       ami_name_prefix:
         description: "AMI name prefix"
         required: true
@@ -175,7 +171,6 @@ jobs:
       application_name: ${{ inputs.application_name }}
       aws_region: ${{ inputs.aws_region }}
       subnet_id: ${{ inputs.ami_subnet_id }}
-      ssh_cidr: ${{ inputs.ami_ssh_cidr }}
       ami_name_prefix: ${{ inputs.ami_name_prefix }}
       target_environment: ${{ inputs.environment }}
     secrets:

@@ -42,7 +42,6 @@ command_repo=''
 command_release_id=''
 command_action=''
 command_subnet_id=''
-command_ssh_cidr=''
 command_ami_name_prefix=''
 command_wait=false
 command_env_file=''
@@ -99,7 +98,7 @@ Global options:
   --remove-command, --output-entrypoint, --frontend-url, --api-url,
   --frontend-origin, --api-base-url, --frontend-hostname,
   --frontend-certificate-arn, --consumer-ref, --cors-path, --websocket-path.
-  AMI options: --ami-subnet-id, --ami-ssh-cidr, --ami-name-prefix.
+  AMI options: --ami-subnet-id, --ami-name-prefix.
   Operational options are accepted after the command; use --help with a
   command in a consumer repository for the required values.
   --help, --version
@@ -501,7 +500,6 @@ parse_args() {
       --release-id) (($# >= 2)) || die '--release-id requires a value'; command_release_id="$2"; shift 2; continue ;;
       --action) (($# >= 2)) || die '--action requires a value'; command_action="$2"; shift 2; continue ;;
       --subnet-id) (($# >= 2)) || die '--subnet-id requires a value'; command_subnet_id="$2"; shift 2; continue ;;
-      --ssh-cidr) (($# >= 2)) || die '--ssh-cidr requires a value'; command_ssh_cidr="$2"; shift 2; continue ;;
       --ami-name-prefix) (($# >= 2)) || die '--ami-name-prefix requires a value'; command_ami_name_prefix="$2"; shift 2; continue ;;
       --from-env-file) (($# >= 2)) || die '--from-env-file requires a path'; command_env_file="$2"; shift 2; continue ;;
       --clear-parameter) (($# >= 2)) || die '--clear-parameter requires a name'; command_clear_parameter="$2"; shift 2; continue ;;
@@ -527,7 +525,6 @@ parse_args() {
       --wait) command_wait=true; shift; continue ;;
       --availability-zone) key=aws.availability_zone ;;
       --ami-subnet-id) key=ami.subnet_id ;;
-      --ami-ssh-cidr) key=ami.ssh_cidr ;;
       --route53-zone-name) key=aws.route53_zone_name ;;
       --route53-zone-id) key=aws.route53_zone_id ;;
       --release-retention-days) key=defaults.release_retention_days ;;
@@ -728,26 +725,12 @@ infer_ami_subnet_id() {
   fi
 }
 
-infer_ami_ssh_cidr() {
-  local public_ip
-  [[ "$offline" != true ]] || return 0
-  [[ -z "${values[ami.ssh_cidr]}" ]] || return 0
-  command -v curl >/dev/null 2>&1 || return 0
-  public_ip="$(curl -fsSL --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"
-  if [[ "$public_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    set_value ami.ssh_cidr "$public_ip/32" inferred
-  else
-    echo 'hint: public operator IP could not be inferred; enter the temporary AMI builder SSH CIDR explicitly' >&2
-  fi
-}
-
 require_onboarding_values() {
   local route53_example application_slug
   detect_onboarding_paths
   infer_aws_availability_zone
   infer_route53_zone_name
   infer_ami_subnet_id
-  infer_ami_ssh_cidr
   prompt_value application_name 'Application name' true
   prompt_value deployment_shape 'Deployment shape (backend-and-frontend, backend-only, or frontend-only)' true
   if [[ -n "$command_ami_name_prefix" ]]; then
@@ -766,7 +749,6 @@ require_onboarding_values() {
   prompt_value aws.availability_zone 'AWS availability zone' true
   if [[ "${values[deployment_shape]}" != frontend-only ]]; then
     prompt_value ami.subnet_id 'AMI public subnet ID' true
-    prompt_value ami.ssh_cidr 'AMI builder SSH CIDR' true
   fi
   application_slug="${values[application_name]%-app}"
   route53_example="${application_slug}.com"
@@ -781,7 +763,7 @@ require_onboarding_values() {
   local key
   for key in application_name infrastructure_repository infrastructure_ref aws.region aws.availability_zone \
     aws.route53_zone_name aws.state_bucket \
-    ami.subnet_id ami.ssh_cidr ami.name_prefix \
+    ami.subnet_id ami.name_prefix \
     backend.ssm_parameters_path backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
     [[ "${values[$key]}" != *'|'* ]] || die "$key cannot contain the template delimiter |"
   done
@@ -817,7 +799,6 @@ render_workflow() {
   template="${template//__ZONE__/${values[aws.route53_zone_name]}}"
   template="${template//__ZONE_ID__/${values[aws.route53_zone_id]}}"
   template="${template//__AMI_SUBNET_ID__/${values[ami.subnet_id]}}"
-  template="${template//__AMI_SSH_CIDR__/${values[ami.ssh_cidr]}}"
   template="${template//__AMI_NAME_PREFIX__/${values[ami.name_prefix]}}"
   template="${template//__STATE_BUCKET__/${values[aws.state_bucket]}}"
   template="${template//__PARAMETER_PATH__/${values[backend.ssm_parameters_path]}}"
@@ -868,7 +849,6 @@ aws:
   state_bucket: ${values[aws.state_bucket]}
 ami:
   subnet_id: ${values[ami.subnet_id]}
-  ssh_cidr: ${values[ami.ssh_cidr]}
   name_prefix: ${values[ami.name_prefix]}
 backend:
   ssm_parameters_path: ${values[backend.ssm_parameters_path]}
@@ -956,7 +936,6 @@ jobs:
       enable_data_volume_backups: ${{ vars.ENABLE_DATA_VOLUME_BACKUPS || __ENABLE_BACKUPS__ }}
       backup_kms_key_arn: ${{ vars.BACKUP_KMS_KEY_ARN || '__BACKUP_KMS_KEY_ARN__' }}
       ami_subnet_id: __AMI_SUBNET_ID__
-      ami_ssh_cidr: __AMI_SSH_CIDR__
       ami_name_prefix: __AMI_NAME_PREFIX__
       ssm_parameter_path: __PARAMETER_PATH__
       ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN }}
@@ -1076,10 +1055,6 @@ on:
         required: true
         default: __AMI_SUBNET_ID__
         type: string
-      ssh_cidr:
-        required: true
-        default: __AMI_SSH_CIDR__
-        type: string
       ami_name_prefix:
         required: true
         default: __AMI_NAME_PREFIX__
@@ -1102,7 +1077,6 @@ jobs:
       application_name: __APP__
       aws_region: __REGION__
       subnet_id: ${{ inputs.subnet_id || '__AMI_SUBNET_ID__' }}
-      ssh_cidr: ${{ inputs.ssh_cidr || '__AMI_SSH_CIDR__' }}
       ami_name_prefix: ${{ inputs.ami_name_prefix || '__AMI_NAME_PREFIX__' }}
       target_environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
     secrets:
@@ -1615,14 +1589,12 @@ ami_adapter() {
   local repo
   require_immutable_ref
   command_subnet_id="${command_subnet_id:-${values[ami.subnet_id]}}"
-  command_ssh_cidr="${command_ssh_cidr:-${values[ami.ssh_cidr]}}"
   command_ami_name_prefix="${command_ami_name_prefix:-${values[ami.name_prefix]}}"
-  [[ -n "$command_subnet_id" && -n "$command_ssh_cidr" ]] ||
-    die 'ami build requires --subnet-id and --ssh-cidr'
+  [[ -n "$command_subnet_id" ]] || die 'ami build requires --subnet-id'
   command_ami_name_prefix="${command_ami_name_prefix:-${values[application_name]}-backend}"
   repo="$(consumer_repository)"
   dispatch_workflow poorman-aws-backend-ami.yml "$repo" \
-    "subnet_id=$command_subnet_id" "ssh_cidr=$command_ssh_cidr" \
+    "subnet_id=$command_subnet_id" \
     "ami_name_prefix=$command_ami_name_prefix"
 }
 

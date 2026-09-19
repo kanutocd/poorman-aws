@@ -148,7 +148,6 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
     --application-name onboard-app \
     --deployment-shape backend-and-frontend \
     --ami-subnet-id subnet-0123456789abcdef0 \
-    --ami-ssh-cidr 203.0.113.10/32 \
     --availability-zone us-east-2a \
     --route53-zone-name example.test \
     --state-bucket onboard-state \
@@ -158,7 +157,6 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
     --deployment-shape backend-and-frontend \
     --infrastructure-ref v1.5.4 \
     --ami-subnet-id subnet-0123456789abcdef0 \
-    --ami-ssh-cidr 203.0.113.10/32 \
     --availability-zone us-east-2a \
     --route53-zone-name example.test \
     --state-bucket onboard-state \
@@ -179,9 +177,9 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
     grep -q 'infrastructure_ref:'
   grep -Fq 'state_bucket: onboard-state' .poorman-aws.yml
   grep -Fq 'subnet_id: subnet-0123456789abcdef0' .poorman-aws.yml
-  grep -Fq 'ssh_cidr: 203.0.113.10/32' .poorman-aws.yml
+  ! grep -Fq 'ssh_cidr:' .poorman-aws.yml
   grep -Fq 'default: subnet-0123456789abcdef0' .github/workflows/poorman-aws-backend-ami.yml
-  grep -Fq 'default: 203.0.113.10/32' .github/workflows/poorman-aws-backend-ami.yml
+  ! grep -Fq 'ssh_cidr:' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'default: onboard-app-backend' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'default: staging' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'target_environment: ${{ inputs.environment ||' .github/workflows/poorman-aws-backend-ami.yml
@@ -200,7 +198,6 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
     --application-name onboard-app \
     --deployment-shape backend-and-frontend \
     --ami-subnet-id subnet-0123456789abcdef0 \
-    --ami-ssh-cidr 203.0.113.10/32 \
     --availability-zone us-east-2a \
     --route53-zone-name example.test \
     --state-bucket onboard-state \
@@ -217,7 +214,7 @@ touch "$temporary_dir/interactive/backend/Caddyfile"
 touch "$temporary_dir/interactive/backend/Dockerfile"
 (
   cd "$temporary_dir/interactive"
-  printf 'interactive-app\nbackend-and-frontend\nus-east-2a\nsubnet-0123456789abcdef0\n203.0.113.10/32\nexample.test\ninteractive-state\ny\n' |
+  printf 'interactive-app\nbackend-and-frontend\nus-east-2a\nsubnet-0123456789abcdef0\nexample.test\ninteractive-state\ny\n' |
     "$wrapper" --consumer-path . onboard >/dev/null 2>"$temporary_dir/interactive-onboard.stderr"
   grep -Fq 'onboarding change: .poorman-aws.yml' "$temporary_dir/interactive-onboard.stderr"
   grep -Fq 'application_name: interactive-app' .poorman-aws.yml
