@@ -52,3 +52,10 @@ the bootstrap default `<application>-github-<environment>`. It also sets the
 dedicated `AWS_AMI_ROLE_ARN` secret in `staging` and `production`, pointing to
 the `<application>-github-ami-build` role used by infrastructure's idempotent
 AMI prerequisite. The command never prints secret values.
+
+The generated AMI and backend-infrastructure callers also require the consumer
+repository secret `POORMAN_ENVIRONMENT_ADMIN_TOKEN`. Set it to a protected
+fine-grained token or GitHub App credential that can manage variables in the
+consumer environments. This is separate from the AWS role secrets and is used
+only after an AMI has been built or reused, when the workflow publishes
+`AMI_ID` and `AMI_BUILD_FINGERPRINT`.

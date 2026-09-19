@@ -31,6 +31,10 @@ Required inputs are:
 provides defaults for `subnet_id` and `ami_name_prefix` from the consumer
 onboarding configuration; the runner egress CIDR is determined at runtime.
 The `aws_role_arn` secret must be a temporary, narrowly scoped AMI-build role.
+The `environment_admin_token` secret must be a repository token allowed to
+write variables in the selected consumer environment. The default
+`GITHUB_TOKEN` is not sufficient for this repository API operation. Generated
+callers use `POORMAN_ENVIRONMENT_ADMIN_TOKEN` for this purpose.
 The workflow runs in the protected
 `ami-build` environment and does not build an application image.
 

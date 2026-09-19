@@ -35,6 +35,7 @@ Required secret:
 | --- | --- |
 | `aws_role_arn` | IAM role allowed to manage the selected environment. |
 | `ami_build_role_arn` | Dedicated `ami-build` IAM role used only when no matching live AMI exists. |
+| `environment_admin_token` | Repository token allowed to publish `AMI_ID` and its fingerprint to the selected environment. |
 
 Before planning, the workflow calls `build-backend-ami.yml`. That reusable
 workflow checks the canonical artifact and selected environment variables,
@@ -74,6 +75,7 @@ jobs:
     secrets:
       aws_role_arn: ${{ secrets.AWS_BACKEND_ROLE_ARN }}
       ami_build_role_arn: ${{ secrets.AWS_AMI_ROLE_ARN }}
+      environment_admin_token: ${{ secrets.POORMAN_ENVIRONMENT_ADMIN_TOKEN }}
 ```
 
 ## Backend deployment

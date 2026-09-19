@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Changed AMI workflow environment-variable publication to use the explicit
+  `POORMAN_ENVIRONMENT_ADMIN_TOKEN` contract instead of the read-limited
+  default `GITHUB_TOKEN`; nested infrastructure AMI calls now forward the same
+  credential so successful builds can publish `AMI_ID` and its fingerprint.
 - Added the temporary EC2 key-pair create/delete permissions required by the
   Packer AMI builder to the narrowly scoped AMI-build role policy.
 - Added the temporary EC2 instance lifecycle permissions Packer needs to stop

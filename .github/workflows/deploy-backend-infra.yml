@@ -111,6 +111,9 @@ on:
       ami_build_role_arn:
         description: "Dedicated IAM role allowed to build or reuse the host AMI"
         required: true
+      environment_admin_token:
+        description: "Token allowed to publish AMI variables to the consumer environment"
+        required: true
 
 permissions:
   contents: read
@@ -175,6 +178,7 @@ jobs:
       target_environment: ${{ inputs.environment }}
     secrets:
       aws_role_arn: ${{ secrets.ami_build_role_arn }}
+      environment_admin_token: ${{ secrets.environment_admin_token }}
 
   plan:
     name: Plan ${{ inputs.environment }}

@@ -48,6 +48,9 @@ on:
       aws_role_arn:
         description: "IAM role allowed to build the AMI"
         required: true
+      environment_admin_token:
+        description: "Token allowed to publish AMI variables to the consumer environment"
+        required: true
 
 permissions:
   contents: read
@@ -331,7 +334,7 @@ jobs:
 
       - name: Publish AMI_ID to the target environment
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.environment_admin_token }}
           AMI_ID: ${{ steps.metadata.outputs.ami_id }}
           AMI_BUILD_FINGERPRINT: ${{ steps.metadata.outputs.build_fingerprint }}
         run: |

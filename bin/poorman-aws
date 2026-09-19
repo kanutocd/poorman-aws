@@ -953,6 +953,7 @@ jobs:
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
       ami_build_role_arn: ${{ secrets.AWS_AMI_ROLE_ARN }}
+      environment_admin_token: ${{ secrets.POORMAN_ENVIRONMENT_ADMIN_TOKEN }}
 EOF
 )"
   deploy="$(cat <<'EOF'
@@ -1090,6 +1091,7 @@ jobs:
       target_environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
+      environment_admin_token: ${{ secrets.POORMAN_ENVIRONMENT_ADMIN_TOKEN }}
 EOF
 )"
   lifecycle="$(cat <<'EOF'
