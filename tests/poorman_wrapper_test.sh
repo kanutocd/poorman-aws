@@ -4,7 +4,8 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 wrapper="$project_root/bin/poorman-aws"
 temporary_dir="$(mktemp -d)"
-trap 'rm -rf "$temporary_dir"' EXIT
+prompt_home="$(mktemp -d)"
+trap 'rm -rf "$temporary_dir" "$prompt_home"' EXIT
 
 orphan_directory="$temporary_dir/../poorman-wrapper-orphan"
 mkdir -p "$orphan_directory"
@@ -30,7 +31,7 @@ YAML
 
 git -C "$temporary_dir" init -q
 mkdir -p "$temporary_dir/backend"
-tilde_home="$temporary_dir/tilde-home"
+tilde_home="$prompt_home/tilde-home"
 mkdir -p "$tilde_home"
 tilde_output="$(HOME="$tilde_home" XDG_STATE_HOME="$temporary_dir/tilde-state" \
   "$wrapper" --consumer-path '~' --offline --non-interactive config show)"
@@ -39,9 +40,13 @@ grep -Fq 'application_name                     application (source: default)' <<
 prompt_consumer="$tilde_home/prompt-consumer"
 mkdir -p "$prompt_consumer"
 prompt_path="$(printf '%c' '~')/prompt-consumer"
-prompt_output="$(printf '%s\n\n' "$prompt_path" | \
-  HOME="$tilde_home" XDG_STATE_HOME="$temporary_dir/prompt-state" \
-  "$wrapper" --offline install 2>&1 || true)"
+prompt_output="$(
+  cd "$tilde_home"
+  printf '%s\n\n' "$prompt_path" | \
+    HOME="$tilde_home" PATH=/usr/bin:/bin \
+    XDG_STATE_HOME="$temporary_dir/prompt-state" \
+    "$wrapper" --offline install 2>&1 || true
+)"
 grep -Fq 'Application name [prompt-consumer]:' <<<"$prompt_output"
 
 current_user_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
@@ -179,7 +184,7 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
   grep -Fq 'default: 203.0.113.10/32' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'default: onboard-app-backend' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'default: staging' .github/workflows/poorman-aws-backend-ami.yml
-  grep -Fq 'target_environment: ${{ inputs.environment }}' .github/workflows/poorman-aws-backend-ami.yml
+  grep -Fq 'target_environment: ${{ inputs.environment ||' .github/workflows/poorman-aws-backend-ami.yml
   ! grep -Fq 'ami_id: ${{ secrets.AMI_ID }}' .github/workflows/poorman-aws-backend-infra.yml
   ! grep -Fq 'ami_id: ${{ secrets.AMI_ID }}' .github/workflows/poorman-aws-lifecycle.yml
   for workflow in \
