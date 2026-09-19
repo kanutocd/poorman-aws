@@ -107,6 +107,7 @@ Global options:
   --frontend-origin, --api-base-url, --frontend-hostname,
   --frontend-certificate-arn, --consumer-ref, --cors-path, --websocket-path.
   AMI options: --ami-subnet-id, --ami-name-prefix.
+  AWS options: --ssm-session-kms-key-arn.
   Operational options are accepted after the command; use --help with a
   command in a consumer repository for the required values.
   --help, --version
@@ -296,7 +297,7 @@ allowed_key() {
     version|application_name|deployment_shape|infrastructure_repository|infrastructure_ref|\
     aws.region|aws.state_bucket|aws.availability_zone|aws.route53_zone_name|\
     aws.route53_zone_id|ami.subnet_id|ami.ssh_cidr|ami.name_prefix|\
-    backend.ssm_parameters_path|backend.compose_file|\
+    backend.ssm_parameters_path|backend.ssm_session_kms_key_arn|backend.compose_file|\
     backend.caddy_file|backend.build_context|backend.dockerfile|\
     backend.supplemental_files|defaults.target_environment|defaults.instance_type|defaults.root_volume_size_gib|\
     defaults.data_volume_size_gib|defaults.release_retention_days|\
@@ -333,7 +334,7 @@ allowed = {
     "infrastructure_ref", "aws.region", "aws.state_bucket",
     "aws.availability_zone", "aws.route53_zone_name", "aws.route53_zone_id",
     "ami.subnet_id", "ami.ssh_cidr", "ami.name_prefix",
-    "backend.ssm_parameters_path", "backend.parameter_path", "backend.compose_file", "backend.caddy_file",
+    "backend.ssm_parameters_path", "backend.ssm_session_kms_key_arn", "backend.parameter_path", "backend.compose_file", "backend.caddy_file",
     "backend.build_context", "backend.dockerfile", "backend.supplemental_files",
     "defaults.target_environment", "defaults.instance_type", "defaults.root_volume_size_gib",
     "defaults.data_volume_size_gib", "defaults.release_retention_days",
@@ -380,7 +381,7 @@ allowed = %w[
   version application_name deployment_shape infrastructure_repository infrastructure_ref
   aws.region aws.state_bucket aws.availability_zone aws.route53_zone_name
   aws.route53_zone_id ami.subnet_id ami.ssh_cidr ami.name_prefix
-  backend.ssm_parameters_path backend.compose_file
+  backend.ssm_parameters_path backend.ssm_session_kms_key_arn backend.compose_file
   backend.caddy_file backend.build_context backend.dockerfile backend.supplemental_files
   backend.parameter_path
   defaults.target_environment defaults.instance_type defaults.root_volume_size_gib defaults.data_volume_size_gib
@@ -431,6 +432,7 @@ load_defaults() {
   set_value ami.ssh_cidr '' default
   set_value ami.name_prefix '' default
   set_value backend.ssm_parameters_path /application/staging default
+  set_value backend.ssm_session_kms_key_arn '' default
   set_value backend.compose_file backend/compose.production.yaml default
   set_value backend.caddy_file backend/Caddyfile default
   set_value backend.build_context backend default
@@ -546,6 +548,7 @@ parse_args() {
       --aws-region) key=aws.region ;;
       --state-bucket) key=aws.state_bucket ;;
       --parameter-path|--ssm-parameters-path) key=backend.ssm_parameters_path ;;
+      --ssm-session-kms-key-arn) key=backend.ssm_session_kms_key_arn ;;
       --compose-file) key=backend.compose_file ;;
       --caddy-file) key=backend.caddy_file ;;
       --build-context) key=backend.build_context ;;
@@ -591,6 +594,8 @@ validate_values() {
     die 'aws.route53_zone_name is invalid'
   [[ "${values[backend.ssm_parameters_path]}" =~ ^/[^/].*[^/]$ ]] ||
     die 'backend.ssm_parameters_path must be an absolute SSM path'
+  [[ -z "${values[backend.ssm_session_kms_key_arn]}" || "${values[backend.ssm_session_kms_key_arn]}" =~ ^arn:[^:]+:kms:[^:]+:[^:]+:key/.+$ ]] ||
+    die 'backend.ssm_session_kms_key_arn must be a KMS key ARN'
   [[ "${values[defaults.instance_type]}" =~ ^[a-z0-9.-]+$ ]] || die 'instance_type is invalid'
   [[ "${values[defaults.root_volume_size_gib]}" =~ ^[0-9]+$ && "${values[defaults.root_volume_size_gib]}" -ge 8 ]] ||
     die 'root_volume_size_gib must be an integer of at least 8'
@@ -733,12 +738,30 @@ infer_ami_subnet_id() {
   fi
 }
 
+infer_ssm_session_kms_key_arn() {
+  local document_content key_arn
+  [[ "$offline" != true ]] || return 0
+  [[ "${sources[backend.ssm_session_kms_key_arn]}" == default ]] || return 0
+  command -v aws >/dev/null 2>&1 || return 0
+  document_content="$(aws ssm get-document \
+    --region "${values[aws.region]}" \
+    --name SSM-SessionManagerRunShell \
+    --document-version '$DEFAULT' \
+    --query Content --output text 2>/dev/null || true)"
+  key_arn="$(jq -r '.inputs.kmsKeyId // empty' <<<"$document_content" 2>/dev/null || true)"
+  if [[ "$key_arn" =~ ^arn:[^:]+:kms:[^:]+:[^:]+:key/.+$ ]]; then
+    set_value backend.ssm_session_kms_key_arn "$key_arn" inferred
+    echo "inferred Session Manager KMS key: $key_arn" >&2
+  fi
+}
+
 require_onboarding_values() {
   local route53_example application_slug
   detect_onboarding_paths
   infer_aws_availability_zone
   infer_route53_zone_name
   infer_ami_subnet_id
+  infer_ssm_session_kms_key_arn
   prompt_value application_name 'Application name' true
   prompt_value deployment_shape 'Deployment shape (backend-and-frontend, backend-only, or frontend-only)' true
   if [[ -n "$command_ami_name_prefix" ]]; then
@@ -772,7 +795,7 @@ require_onboarding_values() {
   for key in application_name infrastructure_repository infrastructure_ref aws.region aws.availability_zone \
     aws.route53_zone_name aws.state_bucket \
     ami.subnet_id ami.name_prefix \
-    backend.ssm_parameters_path backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
+    backend.ssm_parameters_path backend.ssm_session_kms_key_arn backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
     [[ "${values[$key]}" != *'|'* ]] || die "$key cannot contain the template delimiter |"
   done
   for key in frontend.directory frontend.build_command frontend.deploy_command frontend.remove_command \
@@ -810,6 +833,7 @@ render_workflow() {
   template="${template//__AMI_NAME_PREFIX__/${values[ami.name_prefix]}}"
   template="${template//__STATE_BUCKET__/${values[aws.state_bucket]}}"
   template="${template//__PARAMETER_PATH__/${values[backend.ssm_parameters_path]}}"
+  template="${template//__SSM_SESSION_KMS_KEY_ARN__/${values[backend.ssm_session_kms_key_arn]}}"
   template="${template//__COMPOSE__/${values[backend.compose_file]}}"
   template="${template//__CADDY__/${values[backend.caddy_file]}}"
   template="${template//__CONTEXT__/${values[backend.build_context]}}"
@@ -860,6 +884,7 @@ ami:
   name_prefix: ${values[ami.name_prefix]}
 backend:
   ssm_parameters_path: ${values[backend.ssm_parameters_path]}
+  ssm_session_kms_key_arn: ${values[backend.ssm_session_kms_key_arn]}
   compose_file: ${values[backend.compose_file]}
   caddy_file: ${values[backend.caddy_file]}
   build_context: ${values[backend.build_context]}
@@ -946,7 +971,7 @@ jobs:
       ami_subnet_id: __AMI_SUBNET_ID__
       ami_name_prefix: __AMI_NAME_PREFIX__
       ssm_parameter_path: __PARAMETER_PATH__
-      ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN }}
+      ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN || '__SSM_SESSION_KMS_KEY_ARN__' }}
       route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME || '__ZONE__' }}
       route53_zone_id: ${{ vars.ROUTE53_ZONE_ID || '__ZONE_ID__' }}
       tags_json: '{}'
@@ -1166,7 +1191,7 @@ jobs:
       enable_data_volume_backups: ${{ vars.ENABLE_DATA_VOLUME_BACKUPS || __ENABLE_BACKUPS__ }}
       backup_kms_key_arn: ${{ vars.BACKUP_KMS_KEY_ARN || '__BACKUP_KMS_KEY_ARN__' }}
       ssm_parameter_path: __PARAMETER_PATH__
-      ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN }}
+      ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN || '__SSM_SESSION_KMS_KEY_ARN__' }}
       route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME || '__ZONE__' }}
       route53_zone_id: ${{ vars.ROUTE53_ZONE_ID || '__ZONE_ID__' }}
       tags_json: '{}'
@@ -1643,6 +1668,15 @@ github_environment_sync() {
   fi
   [[ "$detected_aws_account" =~ ^[0-9]{12}$ ]] || die 'could not determine the AWS account ID for environment role synchronization'
   require_mutation_confirmation SYNC-GITHUB-ENVIRONMENTS
+  if [[ -n "${values[backend.ssm_session_kms_key_arn]}" ]]; then
+    if [[ "$dry_run" == true ]]; then
+      echo 'would set repository variable: SSM_SESSION_KMS_KEY_ARN'
+    else
+      printf '%s' "${values[backend.ssm_session_kms_key_arn]}" |
+        gh variable set SSM_SESSION_KMS_KEY_ARN --repo "$repo" >/dev/null
+      echo 'synchronized repository variable: SSM_SESSION_KMS_KEY_ARN'
+    fi
+  fi
   role_prefix="${values[application_name]}-github"
   ami_role_arn="arn:aws:iam::${detected_aws_account}:role/${role_prefix}-ami-build"
   for environment in staging production ami-build; do
@@ -2064,6 +2098,7 @@ check_aws_setup_privileges() {
     iam:AttachRolePolicy
     route53:ListHostedZonesByName
     route53:ChangeResourceRecordSets
+    ssm:GetDocument
   )
 
   [[ -n "$detected_aws_caller" ]] || {

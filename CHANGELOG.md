@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Added automatic Session Manager KMS discovery during onboarding. The key ARN
+  is persisted in consumer configuration, rendered as a workflow fallback,
+  and synchronized as the non-sensitive repository variable
+  `SSM_SESSION_KMS_KEY_ARN` so the backend instance role receives the matching
+  `kms:Decrypt` permission automatically.
 - Added a guarded pre-plan repair for tainted retained EIPs. The reusable
   infrastructure workflow now verifies the live allocation and ownership tags
   before untainting only the matching OpenTofu state entry from the raw state,
