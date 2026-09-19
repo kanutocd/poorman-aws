@@ -82,6 +82,8 @@ grep -Fq 'info: offline mode skips AWS and GitHub checks' <<<"$doctor_output"
 install_output="$("$wrapper" --offline install)"
 grep -Fq 'installation checks passed' <<<"$install_output"
 grep -Fq 'next: run onboard' <<<"$install_output"
+grep -Fq "  $wrapper --consumer-path $temporary_dir --apply --confirm SYNC-GITHUB-ENVIRONMENTS github sync" <<<"$install_output"
+grep -Fq "  $wrapper --consumer-path $temporary_dir --aws --github --docker --infra doctor" <<<"$install_output"
 grep -Fq "state: $temporary_dir/state/poorman-aws/consumer-" <<<"$install_output"
 test "$(find "$temporary_dir/state/poorman-aws" -type f -name 'consumer-*.yml' ! -name '*.config.yml' | wc -l)" -eq 1
 grep -Fq "application_name: 'fixture-app'" \
@@ -179,6 +181,8 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
   grep -Fq 'subnet_id: subnet-0123456789abcdef0' .poorman-aws.yml
   ! grep -Fq 'ssh_cidr:' .poorman-aws.yml
   grep -Fq 'default: subnet-0123456789abcdef0' .github/workflows/poorman-aws-backend-ami.yml
+  grep -Fq 'name: Build `poorman-aws` backend AMI' .github/workflows/poorman-aws-backend-ami.yml
+  grep -Fq '  id-token: write' .github/workflows/poorman-aws-backend-ami.yml
   ! grep -Fq 'ssh_cidr:' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'default: onboard-app-backend' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'default: staging' .github/workflows/poorman-aws-backend-ami.yml

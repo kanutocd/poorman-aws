@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Improved generated consumer workflow names with descriptive title-style
+  labels, including the `poorman-aws` product name and the operation being
+  performed.
+- Added caller-level `id-token: write` permission to generated AMI workflows
+  so nested OIDC credential configuration and cleanup jobs are authorized by
+  GitHub Actions.
+
+- Made onboarding and installation next-step guidance reuse the exact wrapper
+  executable path used for the current invocation, including absolute paths,
+  and include the resolved consumer repository path, so copy-pasteable GitHub
+  synchronization and prerequisite commands work from outside both the
+  consumer and infrastructure repositories.
+
 - Changed AMI builder network scoping to determine the executing runner or
   local build machine's public egress CIDR at runtime. Consumer onboarding no
   longer persists an operator IP or asks for `ami_ssh_cidr`; generated callers

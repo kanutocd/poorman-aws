@@ -8,6 +8,14 @@ else
   script_directory=''
 fi
 
+wrapper_command() {
+  if [[ -n "$wrapper_source" && "$wrapper_source" != /dev/stdin && "$wrapper_source" != bash ]]; then
+    printf '%s\n' "$wrapper_source"
+  else
+    printf 'poorman-aws\n'
+  fi
+}
+
 # Self-contained consumer entry point. It is intentionally safe:
 # operational commands are reserved until their adapters are implemented.
 
@@ -885,7 +893,7 @@ EOF
   if [[ "$config_explicit" == false ]]; then stage_onboarding_file .poorman-aws.yml "$config_content"; fi
 
   infra="$(cat <<'EOF'
-name: poorman-aws backend infrastructure
+name: Build `poorman-aws` backend infrastructure
 on:
   # Future automation examples (disabled by default). Enable only after
   # reviewing apply permissions and environment protections:
@@ -948,7 +956,7 @@ jobs:
 EOF
 )"
   deploy="$(cat <<'EOF'
-name: poorman-aws backend deploy
+name: Deploy `poorman-aws` backend release
 on:
   # Future automation examples (disabled by default). Enable only after
   # reviewing deployment permissions and the generated literal fallbacks:
@@ -998,7 +1006,7 @@ jobs:
 EOF
 )"
   rollback="$(cat <<'EOF'
-name: poorman-aws backend rollback
+name: Roll back `poorman-aws` backend release
 on:
   # Keep rollback manual by default. A future workflow_run trigger must
   # supply a reviewed consumer_ref and explicit rollback confirmation:
@@ -1040,7 +1048,7 @@ jobs:
 EOF
 )"
   ami="$(cat <<'EOF'
-name: poorman-aws backend AMI
+name: Build `poorman-aws` backend AMI
 on:
   # Keep AMI builds manual by default because they create AWS resources and
   # incur cost. A future schedule or workflow_run trigger must be reviewed:
@@ -1068,6 +1076,7 @@ on:
 permissions:
   contents: read
   actions: write
+  id-token: write
 jobs:
   ami:
     uses: __REPOSITORY__/.github/workflows/build-backend-ami.yml@__REF__
@@ -1084,7 +1093,7 @@ jobs:
 EOF
 )"
   lifecycle="$(cat <<'EOF'
-name: poorman-aws non-production lifecycle
+name: Manage `poorman-aws` non-production lifecycle
 on:
   # Keep lifecycle actions manual and confirmation-gated. Do not enable
   # push, schedule, or workflow_run triggers without a teardown review:
@@ -1143,7 +1152,7 @@ jobs:
 EOF
  )"
   parameters="$(cat <<'EOF'
-name: poorman-aws backend parameters
+name: Bootstrap `poorman-aws` backend parameters
 on:
   # Future automation examples (disabled by default). Keep apply false until
   # the parameter source and environment protections are reviewed:
@@ -1192,7 +1201,7 @@ jobs:
 EOF
  )"
   frontend_deploy="$(cat <<'EOF'
-name: poorman-aws frontend deploy
+name: Deploy `poorman-aws` frontend
 on:
   # Future automation examples (disabled by default). Enable only after
   # reviewing frontend role permissions and the generated fallbacks:
@@ -1236,7 +1245,7 @@ jobs:
 EOF
   )"
   frontend_rollback="$(cat <<'EOF'
-name: poorman-aws frontend rollback
+name: Roll back `poorman-aws` frontend
 on:
   # Keep rollback manual by default. A future workflow_run trigger must
   # supply a reviewed consumer_ref and explicit rollback confirmation:
@@ -1281,7 +1290,7 @@ jobs:
 EOF
   )"
   frontend_lifecycle="$(cat <<'EOF'
-name: poorman-aws frontend lifecycle
+name: Manage `poorman-aws` frontend lifecycle
 on:
   # Keep lifecycle actions manual and confirmation-gated. Do not enable
   # push, schedule, or workflow_run triggers without a teardown review:
@@ -1428,13 +1437,14 @@ onboard() {
     fi
   fi
   write_onboarding_files
-  cat <<'NEXT'
-next: review the generated GitHub Actions workflow integration files.
-next: when online, synchronize the consumer GitHub environments and AWS role secrets:
-  bin/poorman-aws --apply --confirm SYNC-GITHUB-ENVIRONMENTS github sync
-next: verify the local and remote prerequisites:
-  bin/poorman-aws --aws --github --docker --infra doctor
-NEXT
+  local command_path consumer_argument
+  command_path="$(printf '%q' "$(wrapper_command)")"
+  consumer_argument="$(printf '%q' "$consumer_root")"
+  echo 'next: review the generated GitHub Actions workflow integration files.'
+  echo 'next: when online, synchronize the consumer GitHub environments and AWS role secrets:'
+  echo "  $command_path --consumer-path $consumer_argument --apply --confirm SYNC-GITHUB-ENVIRONMENTS github sync"
+  echo 'next: verify the local and remote prerequisites:'
+  echo "  $command_path --consumer-path $consumer_argument --aws --github --docker --infra doctor"
 }
 
 operational_environment() {
@@ -2156,12 +2166,15 @@ install_command() {
       echo 'to rerun the full installation checks: bin/poorman-aws install'
     fi
   else
+    local command_path consumer_argument
+    command_path="$(printf '%q' "$(wrapper_command)")"
+    consumer_argument="$(printf '%q' "$consumer_root")"
     echo 'next: run onboard to generate the consumer GitHub Actions workflow integration files:'
-    echo '  bin/poorman-aws onboard'
+    echo "  $command_path --consumer-path $consumer_argument onboard"
     echo 'next: then, when online, synchronize GitHub environments:'
-    echo '  bin/poorman-aws --apply --confirm SYNC-GITHUB-ENVIRONMENTS github sync'
+    echo "  $command_path --consumer-path $consumer_argument --apply --confirm SYNC-GITHUB-ENVIRONMENTS github sync"
     echo 'next: verify prerequisites:'
-    echo '  bin/poorman-aws --aws --github --docker --infra doctor'
+    echo "  $command_path --consumer-path $consumer_argument --aws --github --docker --infra doctor"
   fi
 }
 
