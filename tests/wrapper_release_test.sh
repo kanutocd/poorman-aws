@@ -14,7 +14,7 @@ aws:
   region: us-east-2
   state_bucket: parity-state
 backend:
-  parameter_path: /parity/staging
+  ssm_parameters_path: /parity/staging
 YAML
 
 pushd "$temporary_dir/consumer" >/dev/null
@@ -31,6 +31,7 @@ cmp -s "$temporary_dir/first/poorman-aws-v1.5.4" "$temporary_dir/second/poorman-
 cmp -s "$temporary_dir/first/poorman-aws-v1.5.4.sha256" "$temporary_dir/second/poorman-aws-v1.5.4.sha256"
 (cd "$temporary_dir/first" && sha256sum -c poorman-aws-v1.5.4.sha256)
 bash "$temporary_dir/first/poorman-aws-v1.5.4" --version | grep -Fq 'poorman-aws wrapper contract v1.5.4'
+grep -Fq "wrapper_release_ref='v1.5.4'" "$temporary_dir/first/poorman-aws-v1.5.4"
 grep -Fq '# poorman-aws v1.5.4' "$temporary_dir/first/release-notes.md"
 
 echo 'wrapper release checks passed'

@@ -13,6 +13,9 @@ fi
 
 declare -A values sources cli_values
 config_path=''
+consumer_path_option=''
+consumer_root=''
+consumer_root_source='none'
 config_explicit=false
 json_output=false
 non_interactive=false
@@ -24,6 +27,12 @@ check_docker=false
 check_infra=false
 check_ami=false
 check_github=false
+setup_auth=false
+update_install=false
+automatic_state_bucket_bootstrap=false
+detected_aws_account=''
+detected_aws_caller=''
+aws_setup_privileges='not_checked'
 command_name=''
 command_args=()
 command_environment=''
@@ -44,12 +53,17 @@ command_supplemental_files=()
 command_consumer_ref=''
 command_cors_path=''
 command_websocket_path=''
+# The wrapper release owns the default immutable ref used by generated callers.
+# package-wrapper rewrites this value when producing a versioned artifact.
+wrapper_release_ref='v0.1.0'
 
 usage() {
   cat <<'EOF'
 Usage: poorman-aws [global options] COMMAND [command options]
 
 Commands:
+  install               Check prerequisites and guide first-run setup.
+  bootstrap state-bucket Create or verify the remote OpenTofu state bucket.
   config validate       Validate effective configuration.
   config show           Show effective redacted configuration.
   doctor                Check prerequisites and the consumer repository contract.
@@ -62,23 +76,30 @@ Commands:
   frontend rollback     Dispatch a known-good frontend rollback.
   frontend lifecycle    Dispatch guarded non-production frontend lifecycle.
   frontend smoke        Run non-mutating frontend/API acceptance checks.
+  github sync           Create consumer environments and synchronize AWS role secrets.
 
 Global options:
   --config PATH         Explicit YAML configuration file.
+  --consumer-path PATH  Consumer repository root (default: detected Git root).
   --non-interactive     Refuse prompts.
   --json                Emit machine-readable output where supported.
   --dry-run             Never mutate files or call mutating operations.
   --overwrite           Allow replacing generated files after conflict checks.
-  --offline             Skip AWS and GitHub checks.
+  --offline             Skip AWS/GitHub checks and network-backed onboarding inference.
   --aws                 Check AWS CLI identity and configured region.
   --docker              Check Docker Compose and the consumer Compose file.
   --infra               Check OpenTofu and infrastructure prerequisites.
   --ami                 Check Packer and AMI-build prerequisites.
   --github              Check GitHub CLI authentication.
+  --setup-auth          Offer interactive AWS SSO and GitHub authentication.
+  --update              Revisit saved installer values interactively.
+  --deployment-shape    Set backend-and-frontend, backend-only, or frontend-only.
+  --target-environment  Set the generated workflow default to staging or production.
   Frontend options: --frontend-directory, --build-command, --deploy-command,
   --remove-command, --output-entrypoint, --frontend-url, --api-url,
   --frontend-origin, --api-base-url, --frontend-hostname,
   --frontend-certificate-arn, --consumer-ref, --cors-path, --websocket-path.
+  AMI options: --ami-subnet-id, --ami-ssh-cidr, --ami-name-prefix.
   Operational options are accepted after the command; use --help with a
   command in a consumer repository for the required values.
   --help, --version
@@ -90,13 +111,187 @@ EOF
 die() { echo "poorman-aws: $*" >&2; exit 2; }
 warn() { echo "poorman-aws: warning: $*" >&2; }
 
+expand_user_path() {
+  local user user_home user_path
+  case "$1" in
+    \~) printf '%s\n' "${HOME:-}" ;;
+    \~/*) printf '%s/%s\n' "${HOME:-}" "${1#\~/}" ;;
+    \~[!/]*)
+      user_path="${1#\~}"
+      user="${user_path%%/*}"
+      user_home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
+      if [[ -n "$user_home" ]]; then
+        if [[ "$user_path" == */* ]]; then
+          printf '%s/%s\n' "$user_home" "${user_path#*/}"
+        else
+          printf '%s\n' "$user_home"
+        fi
+      else
+        printf '%s\n' "$1"
+      fi
+      ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+state_directory() {
+  printf '%s/poorman-aws\n' "${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}"
+}
+
+resolve_consumer_root() {
+  local candidate config_directory expanded_consumer_path
+  if [[ -n "$consumer_path_option" ]]; then
+    expanded_consumer_path="$(expand_user_path "$consumer_path_option")"
+    [[ -d "$expanded_consumer_path" ]] || die "consumer path is not a directory: $consumer_path_option"
+    consumer_root="$(cd "$expanded_consumer_path" && pwd -P)"
+    consumer_root_source='explicit'
+  elif [[ -n "$config_path" && "$config_path" != /* ]]; then
+    config_directory="$(cd "$(dirname "$config_path")" && pwd -P)"
+    consumer_root="$config_directory"
+    consumer_root_source='inferred'
+  elif [[ -n "$config_path" ]]; then
+    consumer_root="$(cd "$(dirname "$config_path")" && pwd -P)"
+    consumer_root_source='inferred'
+  elif [[ -n "$script_directory" && "$(basename "$(dirname "$script_directory")")" == .poorman-aws ]]; then
+    consumer_root="$(cd "$script_directory/../.." && pwd -P)"
+    consumer_root_source='inferred'
+  elif candidate="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)" && [[ -n "$candidate" ]]; then
+    consumer_root="$candidate"
+    consumer_root_source='inferred'
+  elif [[ -e "$PWD/.poorman-aws.yml" || -e "$PWD/.poorman-aws.yaml" ||
+    -d "$PWD/.git" || -d "$PWD/backend" || -d "$PWD/frontend" ||
+    -d "$PWD/deployment" ]]; then
+    consumer_root="$PWD"
+    consumer_root_source='inferred'
+  else
+    consumer_root=''
+  fi
+  [[ -z "$consumer_root" ]] || cd "$consumer_root"
+}
+
+prompt_consumer_root() {
+  local answer selected expanded_selected
+  if [[ "$consumer_root_source" == explicit ]]; then
+    return 0
+  fi
+  if [[ -n "$consumer_root" && ! -t 0 ]]; then
+    return 0
+  fi
+  if [[ "$non_interactive" == true ]]; then
+    [[ -n "$consumer_root" ]] ||
+      die 'consumer repository path could not be inferred; provide --consumer-path PATH'
+    return 0
+  fi
+  if [[ -n "$consumer_root" ]]; then
+    printf 'Consumer repository path [%s]: ' "$consumer_root" >&2
+  else
+    printf 'Consumer repository path: ' >&2
+  fi
+  IFS= read -r answer || die 'unable to read the consumer repository path'
+  selected="${answer:-$consumer_root}"
+  [[ -n "$selected" ]] || die 'consumer repository path is required'
+  expanded_selected="$(expand_user_path "$selected")"
+  [[ -d "$expanded_selected" ]] || die "consumer repository path is not a directory: $selected"
+  consumer_root="$(cd "$expanded_selected" && pwd -P)"
+  consumer_root_source='prompt'
+  cd "$consumer_root"
+}
+
+consumer_state_file() {
+  local consumer_key
+  consumer_key="$(printf '%s' "$PWD" | sha256sum | cut -c1-16)"
+  printf '%s/consumer-%s.yml\n' "$(state_directory)" "$consumer_key"
+}
+
+consumer_config_state_file() {
+  local consumer_key
+  consumer_key="$(printf '%s' "$PWD" | sha256sum | cut -c1-16)"
+  printf '%s/consumer-%s.config.yml\n' "$(state_directory)" "$consumer_key"
+}
+
+persist_consumer_config_state() {
+  local source_path="${1:-.poorman-aws.yml}" target_path
+  [[ -f "$source_path" ]] || return 0
+  target_path="$(consumer_config_state_file)"
+  mkdir -p "$(state_directory)"
+  cp "$source_path" "$target_path"
+  chmod 600 "$target_path"
+  echo "persisted consumer configuration checkpoint: $target_path"
+}
+
+yaml_quote() {
+  local value="$1"
+  value="${value//\'/\'\'}"
+  printf "'%s'" "$value"
+}
+
+saved_state_value() {
+  local key="$1" state_file value
+  state_file="$(consumer_state_file)"
+  [[ -r "$state_file" ]] || return 0
+  value="$(sed -n "s/^${key}: '\(.*\)'$/\1/p" "$state_file" | head -1)"
+  printf '%s\n' "$value"
+}
+
+restore_install_state() {
+  local saved_application saved_profile saved_region saved_state_bucket saved_privileges
+  [[ "$update_install" == true ]] && return 0
+  saved_application="$(saved_state_value application_name)"
+  if [[ "${sources[application_name]}" == default && -n "$saved_application" ]]; then
+    set_value application_name "$saved_application" state
+  fi
+  if [[ -z "${AWS_PROFILE:-}" ]]; then
+    saved_profile="$(saved_state_value aws_profile)"
+    if [[ -n "$saved_profile" ]]; then
+      export AWS_PROFILE="$saved_profile"
+    fi
+  fi
+saved_region="$(saved_state_value aws_region)"
+  if [[ "${sources[aws.region]}" == default && -n "$saved_region" ]]; then
+    set_value aws.region "$saved_region" state
+  fi
+  saved_state_bucket="$(saved_state_value aws_state_bucket)"
+  if [[ "${sources[aws.state_bucket]-default}" == default && -n "$saved_state_bucket" ]]; then
+    set_value aws.state_bucket "$saved_state_bucket" state
+  fi
+  saved_privileges="$(saved_state_value aws_setup_privileges)"
+  if [[ -n "$saved_privileges" ]]; then
+    aws_setup_privileges="$saved_privileges"
+  fi
+}
+
+write_install_state() {
+  local result="${1:-incomplete}" command="${2:-install}" state_dir state_file temporary_file profile
+  state_dir="$(state_directory)"
+  state_file="$(consumer_state_file)"
+  profile="${AWS_PROFILE:-default}"
+  mkdir -p "$state_dir"
+  temporary_file="$(mktemp "$state_dir/.consumer-state.XXXXXX")"
+  chmod 600 "$temporary_file"
+  cat >"$temporary_file" <<EOF
+consumer_path: $(yaml_quote "$PWD")
+application_name: $(yaml_quote "${values[application_name]}")
+aws_account_id: $(yaml_quote "${detected_aws_account}")
+aws_caller_arn: $(yaml_quote "${detected_aws_caller}")
+aws_profile: $(yaml_quote "$profile")
+aws_region: $(yaml_quote "${values[aws.region]}")
+aws_state_bucket: $(yaml_quote "${values[aws.state_bucket]-}")
+aws_setup_privileges: $(yaml_quote "$aws_setup_privileges")
+last_command: $(yaml_quote "$command")
+last_result: $(yaml_quote "$result")
+EOF
+  mv "$temporary_file" "$state_file"
+  printf '%s\n' "$state_file"
+}
+
 allowed_key() {
   case "$1" in
-    version|application_name|infrastructure_repository|infrastructure_ref|\
+    version|application_name|deployment_shape|infrastructure_repository|infrastructure_ref|\
     aws.region|aws.state_bucket|aws.availability_zone|aws.route53_zone_name|\
-    aws.route53_zone_id|backend.parameter_path|backend.compose_file|\
+    aws.route53_zone_id|ami.subnet_id|ami.ssh_cidr|ami.name_prefix|\
+    backend.ssm_parameters_path|backend.compose_file|\
     backend.caddy_file|backend.build_context|backend.dockerfile|\
-    backend.supplemental_files|defaults.instance_type|defaults.root_volume_size_gib|\
+    backend.supplemental_files|defaults.target_environment|defaults.instance_type|defaults.root_volume_size_gib|\
     defaults.data_volume_size_gib|defaults.release_retention_days|\
     defaults.enable_data_volume_backups|defaults.backup_kms_key_arn|\
     defaults.retain_data_volume|defaults.retain_eip|frontend.directory|\
@@ -127,12 +322,13 @@ import sys
 import yaml
 
 allowed = {
-    "version", "application_name", "infrastructure_repository",
+    "version", "application_name", "deployment_shape", "infrastructure_repository",
     "infrastructure_ref", "aws.region", "aws.state_bucket",
     "aws.availability_zone", "aws.route53_zone_name", "aws.route53_zone_id",
-    "backend.parameter_path", "backend.compose_file", "backend.caddy_file",
+    "ami.subnet_id", "ami.ssh_cidr", "ami.name_prefix",
+    "backend.ssm_parameters_path", "backend.parameter_path", "backend.compose_file", "backend.caddy_file",
     "backend.build_context", "backend.dockerfile", "backend.supplemental_files",
-    "defaults.instance_type", "defaults.root_volume_size_gib",
+    "defaults.target_environment", "defaults.instance_type", "defaults.root_volume_size_gib",
     "defaults.data_volume_size_gib", "defaults.release_retention_days",
     "defaults.enable_data_volume_backups", "defaults.backup_kms_key_arn",
     "defaults.retain_data_volume", "defaults.retain_eip",
@@ -164,6 +360,8 @@ def flatten(value, prefix=""):
 for key, value in flatten(document):
     if key not in allowed:
         raise SystemExit(f"unsupported configuration key: {key}")
+    if key == "backend.parameter_path":
+        key = "backend.ssm_parameters_path"
     print(f"{key}\t{value}")
 PY
     return
@@ -172,11 +370,13 @@ PY
   if command -v ruby >/dev/null 2>&1 && ruby -e 'require "yaml"' >/dev/null 2>&1; then
     ruby -ryaml - "$path" <<'RUBY'
 allowed = %w[
-  version application_name infrastructure_repository infrastructure_ref
+  version application_name deployment_shape infrastructure_repository infrastructure_ref
   aws.region aws.state_bucket aws.availability_zone aws.route53_zone_name
-  aws.route53_zone_id backend.parameter_path backend.compose_file
+  aws.route53_zone_id ami.subnet_id ami.ssh_cidr ami.name_prefix
+  backend.ssm_parameters_path backend.compose_file
   backend.caddy_file backend.build_context backend.dockerfile backend.supplemental_files
-  defaults.instance_type defaults.root_volume_size_gib defaults.data_volume_size_gib
+  backend.parameter_path
+  defaults.target_environment defaults.instance_type defaults.root_volume_size_gib defaults.data_volume_size_gib
   defaults.release_retention_days defaults.enable_data_volume_backups
   defaults.backup_kms_key_arn defaults.retain_data_volume defaults.retain_eip
   frontend.directory frontend.build_command frontend.deploy_command
@@ -200,6 +400,7 @@ flatten = lambda do |value, prefix = '', &block|
 end
 flatten.call(document) do |key, value|
   abort "unsupported configuration key: #{key}" unless allowed.include?(key)
+  key = 'backend.ssm_parameters_path' if key == 'backend.parameter_path'
   puts "#{key}\t#{value}"
 end
 RUBY
@@ -212,18 +413,23 @@ RUBY
 load_defaults() {
   set_value version 1 default
   set_value application_name application default
+  set_value deployment_shape backend-and-frontend default
   set_value infrastructure_repository kanutocd/poorman-aws default
-  set_value infrastructure_ref main default
+  set_value infrastructure_ref "$wrapper_release_ref" default
   set_value aws.region ap-southeast-1 default
   set_value aws.availability_zone '' default
   set_value aws.route53_zone_name '' default
   set_value aws.route53_zone_id '' default
-  set_value backend.parameter_path /application/staging default
+  set_value ami.subnet_id '' default
+  set_value ami.ssh_cidr '' default
+  set_value ami.name_prefix '' default
+  set_value backend.ssm_parameters_path /application/staging default
   set_value backend.compose_file backend/compose.production.yaml default
   set_value backend.caddy_file backend/Caddyfile default
   set_value backend.build_context backend default
   set_value backend.dockerfile backend/Dockerfile default
   set_value backend.supplemental_files '' default
+  set_value defaults.target_environment staging default
   set_value defaults.instance_type t4g.micro default
   set_value defaults.root_volume_size_gib 10 default
   set_value defaults.data_volume_size_gib 20 default
@@ -234,8 +440,8 @@ load_defaults() {
   set_value defaults.retain_eip true default
   set_value frontend.directory frontend default
   set_value frontend.build_command 'pnpm build' default
-  set_value frontend.deploy_command 'pnpm exec sst deploy --stage "$ENVIRONMENT"' default
-  set_value frontend.remove_command 'pnpm exec sst remove --stage "$ENVIRONMENT"' default
+  set_value frontend.deploy_command 'bash poorman-aws/bin/frontend-adapter deploy' default
+  set_value frontend.remove_command 'bash poorman-aws/bin/frontend-adapter remove' default
   set_value frontend.output_entrypoint dist/index.html default
   set_value frontend.frontend_url '' default
   set_value frontend.api_url '' default
@@ -256,6 +462,8 @@ load_config() {
     path=.poorman-aws.yml
   elif [[ -f .poorman-aws.yaml ]]; then
     path=.poorman-aws.yaml
+  elif [[ -f "$(consumer_config_state_file)" ]]; then
+    path="$(consumer_config_state_file)"
   fi
   [[ -z "$path" ]] && return
   parsed="$(load_yaml_lines "$path")" || die "could not load configuration: $path"
@@ -273,6 +481,7 @@ parse_args() {
       --help|-h) usage; exit 0 ;;
       --version) printf '%s\n' 'poorman-aws wrapper contract 0.1.0'; exit 0 ;;
       --config) (($# >= 2)) || die '--config requires a path'; config_path="$2"; config_explicit=true; shift 2; continue ;;
+      --consumer-path) (($# >= 2)) || die '--consumer-path requires a path'; consumer_path_option="$2"; shift 2; continue ;;
       --non-interactive) non_interactive=true; shift; continue ;;
       --json) json_output=true; shift; continue ;;
       --dry-run) dry_run=true; shift; continue ;;
@@ -283,6 +492,8 @@ parse_args() {
       --infra) check_infra=true; shift; continue ;;
       --ami) check_ami=true; shift; continue ;;
       --github) check_github=true; shift; continue ;;
+      --setup-auth) setup_auth=true; shift; continue ;;
+      --update) update_install=true; shift; continue ;;
       --environment) (($# >= 2)) || die '--environment requires a value'; command_environment="$2"; shift 2; continue ;;
       --apply) command_apply=true; shift; continue ;;
       --confirm) (($# >= 2)) || die '--confirm requires a value'; command_confirm="$2"; shift 2; continue ;;
@@ -298,6 +509,7 @@ parse_args() {
       --allow-type-change) command_allow_type_change=true; shift; continue ;;
       --release-file) (($# >= 2)) || die '--release-file requires DEST=PATH'; command_supplemental_files+=("$2"); shift 2; continue ;;
       --consumer-ref) (($# >= 2)) || die '--consumer-ref requires a value'; command_consumer_ref="$2"; shift 2; continue ;;
+      --deployment-shape) key=deployment_shape ;;
       --frontend-directory) key=frontend.directory ;;
       --build-command) key=frontend.build_command ;;
       --deploy-command) key=frontend.deploy_command ;;
@@ -314,9 +526,12 @@ parse_args() {
       --websocket-path) (($# >= 2)) || die '--websocket-path requires a value'; command_websocket_path="$2"; shift 2; continue ;;
       --wait) command_wait=true; shift; continue ;;
       --availability-zone) key=aws.availability_zone ;;
+      --ami-subnet-id) key=ami.subnet_id ;;
+      --ami-ssh-cidr) key=ami.ssh_cidr ;;
       --route53-zone-name) key=aws.route53_zone_name ;;
       --route53-zone-id) key=aws.route53_zone_id ;;
       --release-retention-days) key=defaults.release_retention_days ;;
+      --target-environment) key=defaults.target_environment ;;
       --backup-kms-key-arn) key=defaults.backup_kms_key_arn ;;
       --retain-data-volume) cli_values[defaults.retain_data_volume]=true; shift; continue ;;
       --retain-eip) cli_values[defaults.retain_eip]=true; shift; continue ;;
@@ -325,7 +540,7 @@ parse_args() {
       --infrastructure-ref) key=infrastructure_ref ;;
       --aws-region) key=aws.region ;;
       --state-bucket) key=aws.state_bucket ;;
-      --parameter-path) key=backend.parameter_path ;;
+      --parameter-path|--ssm-parameters-path) key=backend.ssm_parameters_path ;;
       --compose-file) key=backend.compose_file ;;
       --caddy-file) key=backend.caddy_file ;;
       --build-context) key=backend.build_context ;;
@@ -355,18 +570,22 @@ validate_values() {
   [[ "${values[version]}" == 1 ]] || die 'configuration version must be 1'
   [[ "${values[application_name]}" =~ ^[a-z][a-z0-9-]{1,32}$ ]] ||
     die 'application_name must be 2-33 lowercase letters, numbers, or hyphens'
+  [[ "${values[deployment_shape]}" =~ ^(backend-and-frontend|backend-only|frontend-only)$ ]] ||
+    die 'deployment_shape must be backend-and-frontend, backend-only, or frontend-only'
   [[ "${values[infrastructure_repository]}" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] ||
     die 'infrastructure_repository must be OWNER/REPOSITORY'
   [[ -n "${values[infrastructure_ref]}" && "${values[infrastructure_ref]}" != *' '* ]] ||
     die 'infrastructure_ref must be a non-empty ref'
   [[ "${values[aws.region]}" =~ ^[a-z0-9-]+$ ]] || die 'aws.region is invalid'
+  [[ "${values[defaults.target_environment]}" =~ ^(staging|production)$ ]] ||
+    die 'target_environment must be staging or production'
   if [[ -n "${values[aws.availability_zone]}" ]]; then
     [[ "${values[aws.availability_zone]}" =~ ^[a-z0-9-]+$ ]] || die 'aws.availability_zone is invalid'
   fi
   [[ -z "${values[aws.route53_zone_name]}" || "${values[aws.route53_zone_name]}" =~ ^[A-Za-z0-9.-]+$ ]] ||
     die 'aws.route53_zone_name is invalid'
-  [[ "${values[backend.parameter_path]}" =~ ^/[^/].*[^/]$ ]] ||
-    die 'backend.parameter_path must be an absolute SSM path'
+  [[ "${values[backend.ssm_parameters_path]}" =~ ^/[^/].*[^/]$ ]] ||
+    die 'backend.ssm_parameters_path must be an absolute SSM path'
   [[ "${values[defaults.instance_type]}" =~ ^[a-z0-9.-]+$ ]] || die 'instance_type is invalid'
   [[ "${values[defaults.root_volume_size_gib]}" =~ ^[0-9]+$ && "${values[defaults.root_volume_size_gib]}" -ge 8 ]] ||
     die 'root_volume_size_gib must be an integer of at least 8'
@@ -409,16 +628,31 @@ show_config() {
 }
 
 prompt_value() {
-  local key="$1" label="$2" required="${3:-false}" current="${values[$1]-}" answer
-  if [[ -n "$current" && ( "${sources[$key]-}" != default || "$required" != true ) ]]; then
+  local key="$1" label="$2" required="${3:-false}" example="${4:-}" current="${values[$1]-}" answer
+  if [[ -n "$current" && "${sources[$key]-}" != inferred && ( "${sources[$key]-}" != default || "$required" != true ) ]]; then
     return
   fi
   if [[ "$non_interactive" == true ]]; then
     die "$key is required in --non-interactive mode; set it in --config or on the command line"
   fi
-  printf '%s [%s]: ' "$label" "$current" >&2
-  IFS= read -r answer
-  [[ -n "$answer" ]] && set_value "$key" "$answer" prompt
+  while true; do
+    if [[ -n "$current" ]]; then
+      printf '%s [%s]: ' "$label" "$current" >&2
+    elif [[ -n "$example" ]]; then
+      printf '%s (example: %s): ' "$label" "$example" >&2
+    else
+      printf '%s: ' "$label" >&2
+    fi
+    IFS= read -r answer || die "unable to read a value for $key"
+    if [[ -n "$answer" ]]; then
+      set_value "$key" "$answer" prompt
+      return 0
+    fi
+    if [[ "$required" != true || -n "$current" ]]; then
+      return 0
+    fi
+    echo "$label is required; enter a value to continue" >&2
+  done
 }
 
 detect_onboarding_paths() {
@@ -440,27 +674,115 @@ detect_onboarding_paths() {
   fi
 }
 
+infer_aws_availability_zone() {
+  local availability_zone
+  [[ "$offline" != true ]] || return 0
+  [[ -z "${values[aws.availability_zone]}" ]] || return 0
+  command -v aws >/dev/null 2>&1 || return 0
+  [[ -n "${values[aws.region]}" ]] || return 0
+  availability_zone="$(aws ec2 describe-availability-zones \
+    --region "${values[aws.region]}" \
+    --filters Name=state,Values=available Name=zone-type,Values=availability-zone \
+    --query 'AvailabilityZones[0].ZoneName' \
+    --output text 2>/dev/null || true)"
+  if [[ "$availability_zone" =~ ^[a-z0-9-]+[a-z]$ ]]; then
+    set_value aws.availability_zone "$availability_zone" inferred
+  fi
+}
+
+infer_route53_zone_name() {
+  local zone hosted_zones
+  local -a public_zones=()
+  [[ "$offline" != true ]] || return 0
+  [[ -z "${values[aws.route53_zone_name]}" ]] || return 0
+  command -v aws >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  hosted_zones="$(aws route53 list-hosted-zones --output json 2>/dev/null || true)"
+  [[ -n "$hosted_zones" ]] || return 0
+  mapfile -t public_zones < <(jq -r '.HostedZones[] | select(.Config.PrivateZone == false) | .Name | rtrimstr(".")' <<<"$hosted_zones")
+  if (( ${#public_zones[@]} == 1 )); then
+    zone="${public_zones[0]}"
+    set_value aws.route53_zone_name "$zone" inferred
+  elif (( ${#public_zones[@]} == 0 )); then
+    echo 'hint: no public Route 53 hosted zone found; enter the DNS zone name explicitly or create a public hosted zone first' >&2
+  fi
+}
+
+infer_ami_subnet_id() {
+  local subnet_id
+  [[ "$offline" != true ]] || return 0
+  [[ -z "${values[ami.subnet_id]}" ]] || return 0
+  command -v aws >/dev/null 2>&1 || return 0
+  [[ -n "${values[aws.region]}" && -n "${values[aws.availability_zone]}" ]] || return 0
+  subnet_id="$(aws ec2 describe-subnets \
+    --region "${values[aws.region]}" \
+    --filters \
+      "Name=availability-zone,Values=${values[aws.availability_zone]}" \
+      Name=state,Values=available \
+      Name=map-public-ip-on-launch,Values=true \
+    --query 'Subnets[0].SubnetId' --output text 2>/dev/null || true)"
+  if [[ "$subnet_id" =~ ^subnet-[0-9a-f]+$ ]]; then
+    set_value ami.subnet_id "$subnet_id" inferred
+  else
+    echo 'hint: no public subnet was inferred for the selected Availability Zone; enter an AMI build subnet explicitly' >&2
+  fi
+}
+
+infer_ami_ssh_cidr() {
+  local public_ip
+  [[ "$offline" != true ]] || return 0
+  [[ -z "${values[ami.ssh_cidr]}" ]] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  public_ip="$(curl -fsSL --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$public_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    set_value ami.ssh_cidr "$public_ip/32" inferred
+  else
+    echo 'hint: public operator IP could not be inferred; enter the temporary AMI builder SSH CIDR explicitly' >&2
+  fi
+}
+
 require_onboarding_values() {
+  local route53_example application_slug
   detect_onboarding_paths
+  infer_aws_availability_zone
+  infer_route53_zone_name
+  infer_ami_subnet_id
+  infer_ami_ssh_cidr
   prompt_value application_name 'Application name' true
+  prompt_value deployment_shape 'Deployment shape (backend-and-frontend, backend-only, or frontend-only)' true
+  if [[ -n "$command_ami_name_prefix" ]]; then
+    set_value ami.name_prefix "$command_ami_name_prefix" cli
+  fi
+  if [[ -z "${values[ami.name_prefix]}" ]]; then
+    set_value ami.name_prefix "${values[application_name]}-backend" inferred
+  fi
   prompt_value infrastructure_repository 'Infrastructure repository'
-  prompt_value infrastructure_ref 'Immutable infrastructure ref (tag or commit SHA)' true
+  if [[ "${values[infrastructure_ref]}" != "$wrapper_release_ref" ]]; then
+    echo "info: generated workflows are pinned to the wrapper release $wrapper_release_ref" >&2
+  fi
+  values[infrastructure_ref]="$wrapper_release_ref"
+  sources[infrastructure_ref]='wrapper release'
   prompt_value aws.region 'AWS region'
   prompt_value aws.availability_zone 'AWS availability zone' true
-  prompt_value aws.route53_zone_name 'Route 53 zone name' true
+  if [[ "${values[deployment_shape]}" != frontend-only ]]; then
+    prompt_value ami.subnet_id 'AMI public subnet ID' true
+    prompt_value ami.ssh_cidr 'AMI builder SSH CIDR' true
+  fi
+  application_slug="${values[application_name]%-app}"
+  route53_example="${application_slug}.com"
+  prompt_value aws.route53_zone_name 'Route 53 zone name' true "$route53_example"
   prompt_value aws.state_bucket 'Encrypted remote state bucket' true
-  prompt_value backend.parameter_path 'SSM parameter path'
+  prompt_value backend.ssm_parameters_path 'SSM parameters path'
   prompt_value backend.compose_file 'Consumer Compose file'
   prompt_value backend.caddy_file 'Consumer Caddyfile'
   prompt_value backend.build_context 'Docker build context'
   prompt_value backend.dockerfile 'Application Dockerfile'
   validate_values
-  [[ "${values[infrastructure_ref]}" != main && "${values[infrastructure_ref]}" != master ]] ||
-    die 'onboarding requires an immutable infrastructure ref; use a release tag or commit SHA'
   local key
   for key in application_name infrastructure_repository infrastructure_ref aws.region aws.availability_zone \
     aws.route53_zone_name aws.state_bucket \
-    backend.parameter_path backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
+    ami.subnet_id ami.ssh_cidr ami.name_prefix \
+    backend.ssm_parameters_path backend.compose_file backend.caddy_file backend.build_context backend.dockerfile; do
     [[ "${values[$key]}" != *'|'* ]] || die "$key cannot contain the template delimiter |"
   done
   for key in frontend.directory frontend.build_command frontend.deploy_command frontend.remove_command \
@@ -487,14 +809,18 @@ stage_onboarding_file() {
 render_workflow() {
   local template="$1"
   template="${template//__REPOSITORY__/${values[infrastructure_repository]}}"
-  template="${template//__REF__/${values[infrastructure_ref]}}"
+  template="${template//__REF__/${wrapper_release_ref}}"
   template="${template//__APP__/${values[application_name]}}"
   template="${template//__REGION__/${values[aws.region]}}"
+  template="${template//__TARGET_ENVIRONMENT__/${values[defaults.target_environment]}}"
   template="${template//__AZ__/${values[aws.availability_zone]}}"
   template="${template//__ZONE__/${values[aws.route53_zone_name]}}"
   template="${template//__ZONE_ID__/${values[aws.route53_zone_id]}}"
+  template="${template//__AMI_SUBNET_ID__/${values[ami.subnet_id]}}"
+  template="${template//__AMI_SSH_CIDR__/${values[ami.ssh_cidr]}}"
+  template="${template//__AMI_NAME_PREFIX__/${values[ami.name_prefix]}}"
   template="${template//__STATE_BUCKET__/${values[aws.state_bucket]}}"
-  template="${template//__PARAMETER_PATH__/${values[backend.parameter_path]}}"
+  template="${template//__PARAMETER_PATH__/${values[backend.ssm_parameters_path]}}"
   template="${template//__COMPOSE__/${values[backend.compose_file]}}"
   template="${template//__CADDY__/${values[backend.caddy_file]}}"
   template="${template//__CONTEXT__/${values[backend.build_context]}}"
@@ -531,22 +857,28 @@ prepare_onboarding_files() {
   config_content="$(cat <<EOF
 version: 1
 application_name: ${values[application_name]}
+deployment_shape: ${values[deployment_shape]}
 infrastructure_repository: ${values[infrastructure_repository]}
-infrastructure_ref: ${values[infrastructure_ref]}
+infrastructure_ref: ${wrapper_release_ref}
 aws:
   region: ${values[aws.region]}
   availability_zone: ${values[aws.availability_zone]}
   route53_zone_name: ${values[aws.route53_zone_name]}
   route53_zone_id: ${values[aws.route53_zone_id]}
   state_bucket: ${values[aws.state_bucket]}
+ami:
+  subnet_id: ${values[ami.subnet_id]}
+  ssh_cidr: ${values[ami.ssh_cidr]}
+  name_prefix: ${values[ami.name_prefix]}
 backend:
-  parameter_path: ${values[backend.parameter_path]}
+  ssm_parameters_path: ${values[backend.ssm_parameters_path]}
   compose_file: ${values[backend.compose_file]}
   caddy_file: ${values[backend.caddy_file]}
   build_context: ${values[backend.build_context]}
   dockerfile: ${values[backend.dockerfile]}
   supplemental_files: ${values[backend.supplemental_files]}
 defaults:
+  target_environment: ${values[defaults.target_environment]}
   instance_type: ${values[defaults.instance_type]}
   root_volume_size_gib: ${values[defaults.root_volume_size_gib]}
   data_volume_size_gib: ${values[defaults.data_volume_size_gib]}
@@ -575,12 +907,23 @@ EOF
   infra="$(cat <<'EOF'
 name: poorman-aws backend infrastructure
 on:
+  # Future automation examples (disabled by default). Enable only after
+  # reviewing apply permissions and environment protections:
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
+  # schedule:
+  #   - cron: "17 3 * * 1"
   workflow_dispatch:
     inputs:
       environment:
         description: Target environment
         required: true
-        default: staging
+        default: __TARGET_ENVIRONMENT__
         type: choice
         options: [staging, production]
       apply:
@@ -590,6 +933,8 @@ on:
         type: boolean
 permissions:
   contents: read
+  actions: write
+  id-token: write
 jobs:
   infrastructure:
     uses: __REPOSITORY__/.github/workflows/deploy-backend-infra.yml@__REF__
@@ -597,7 +942,7 @@ jobs:
       infrastructure_repository: __REPOSITORY__
       infrastructure_ref: __REF__
       application_name: __APP__
-      environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'staging' }}
+      environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || '__TARGET_ENVIRONMENT__' }}
       apply: ${{ github.event_name == 'workflow_dispatch' && inputs.apply || false }}
       aws_region: __REGION__
       state_bucket: __STATE_BUCKET__
@@ -610,6 +955,9 @@ jobs:
       release_retention_days: ${{ vars.RELEASE_RETENTION_DAYS || __RELEASE_RETENTION_DAYS__ }}
       enable_data_volume_backups: ${{ vars.ENABLE_DATA_VOLUME_BACKUPS || __ENABLE_BACKUPS__ }}
       backup_kms_key_arn: ${{ vars.BACKUP_KMS_KEY_ARN || '__BACKUP_KMS_KEY_ARN__' }}
+      ami_subnet_id: __AMI_SUBNET_ID__
+      ami_ssh_cidr: __AMI_SSH_CIDR__
+      ami_name_prefix: __AMI_NAME_PREFIX__
       ssm_parameter_path: __PARAMETER_PATH__
       ssm_session_kms_key_arn: ${{ vars.SSM_SESSION_KMS_KEY_ARN }}
       route53_zone_name: ${{ vars.ROUTE53_ZONE_NAME || '__ZONE__' }}
@@ -617,17 +965,26 @@ jobs:
       tags_json: '{}'
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
-      ami_id: ${{ secrets.AMI_ID }}
+      ami_build_role_arn: ${{ secrets.AWS_AMI_ROLE_ARN }}
 EOF
 )"
   deploy="$(cat <<'EOF'
 name: poorman-aws backend deploy
 on:
+  # Future automation examples (disabled by default). Enable only after
+  # reviewing deployment permissions and the generated literal fallbacks:
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
   workflow_dispatch:
     inputs:
       environment:
         required: true
-        default: staging
+        default: __TARGET_ENVIRONMENT__
         type: choice
         options: [staging, production]
       supplemental_files:
@@ -637,6 +994,7 @@ on:
         type: string
 permissions:
   contents: read
+  actions: read
 jobs:
   deploy:
     uses: __REPOSITORY__/.github/workflows/deploy-backend.yml@__REF__
@@ -644,7 +1002,7 @@ jobs:
       infrastructure_repository: __REPOSITORY__
       infrastructure_ref: __REF__
       application_name: __APP__
-      environment: ${{ inputs.environment }}
+      environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
       aws_region: __REGION__
       state_bucket: __STATE_BUCKET__
       api_url: ${{ vars.API_URL }}
@@ -663,11 +1021,16 @@ EOF
   rollback="$(cat <<'EOF'
 name: poorman-aws backend rollback
 on:
+  # Keep rollback manual by default. A future workflow_run trigger must
+  # supply a reviewed consumer_ref and explicit rollback confirmation:
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
   workflow_dispatch:
     inputs:
       environment:
         required: true
-        default: staging
+        default: __TARGET_ENVIRONMENT__
         type: choice
         options: [staging, production]
       release_id:
@@ -683,7 +1046,7 @@ jobs:
       infrastructure_ref: __REF__
       consumer_ref: ${{ github.sha }}
       application_name: __APP__
-      environment: ${{ inputs.environment }}
+      environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
       aws_region: __REGION__
       state_bucket: __STATE_BUCKET__
       release_id: ${{ inputs.release_id }}
@@ -700,20 +1063,36 @@ EOF
   ami="$(cat <<'EOF'
 name: poorman-aws backend AMI
 on:
+  # Keep AMI builds manual by default because they create AWS resources and
+  # incur cost. A future schedule or workflow_run trigger must be reviewed:
+  # schedule:
+  #   - cron: "17 3 * * 1"
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
   workflow_dispatch:
     inputs:
       subnet_id:
         required: true
+        default: __AMI_SUBNET_ID__
         type: string
       ssh_cidr:
         required: true
+        default: __AMI_SSH_CIDR__
         type: string
       ami_name_prefix:
         required: true
-        default: __APP__-backend
+        default: __AMI_NAME_PREFIX__
         type: string
+      environment:
+        description: Environment that receives AMI_ID
+        required: true
+        default: __TARGET_ENVIRONMENT__
+        type: choice
+        options: [staging, production]
 permissions:
   contents: read
+  actions: write
 jobs:
   ami:
     uses: __REPOSITORY__/.github/workflows/build-backend-ami.yml@__REF__
@@ -722,9 +1101,10 @@ jobs:
       infrastructure_ref: __REF__
       application_name: __APP__
       aws_region: __REGION__
-      subnet_id: ${{ inputs.subnet_id }}
-      ssh_cidr: ${{ inputs.ssh_cidr }}
-      ami_name_prefix: ${{ inputs.ami_name_prefix }}
+      subnet_id: ${{ inputs.subnet_id || '__AMI_SUBNET_ID__' }}
+      ssh_cidr: ${{ inputs.ssh_cidr || '__AMI_SSH_CIDR__' }}
+      ami_name_prefix: ${{ inputs.ami_name_prefix || '__AMI_NAME_PREFIX__' }}
+      target_environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
 EOF
@@ -732,6 +1112,11 @@ EOF
   lifecycle="$(cat <<'EOF'
 name: poorman-aws non-production lifecycle
 on:
+  # Keep lifecycle actions manual and confirmation-gated. Do not enable
+  # push, schedule, or workflow_run triggers without a teardown review:
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
   workflow_dispatch:
     inputs:
       action:
@@ -751,6 +1136,7 @@ on:
         type: boolean
 permissions:
   contents: read
+  actions: read
 jobs:
   lifecycle:
     uses: __REPOSITORY__/.github/workflows/kill-non-production.yml@__REF__
@@ -780,17 +1166,25 @@ jobs:
       tags_json: '{}'
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
-      ami_id: ${{ secrets.AMI_ID }}
 EOF
  )"
   parameters="$(cat <<'EOF'
 name: poorman-aws backend parameters
 on:
+  # Future automation examples (disabled by default). Keep apply false until
+  # the parameter source and environment protections are reviewed:
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
   workflow_dispatch:
     inputs:
       environment:
         required: true
-        default: staging
+        default: __TARGET_ENVIRONMENT__
         type: choice
         options: [staging, production]
       apply:
@@ -812,7 +1206,7 @@ jobs:
       infrastructure_repository: __REPOSITORY__
       infrastructure_ref: __REF__
       application_name: __APP__
-      environment: ${{ inputs.environment }}
+      environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
       apply: ${{ inputs.apply }}
       clear_parameter: ${{ inputs.clear_parameter }}
       aws_region: __REGION__
@@ -826,11 +1220,20 @@ EOF
   frontend_deploy="$(cat <<'EOF'
 name: poorman-aws frontend deploy
 on:
+  # Future automation examples (disabled by default). Enable only after
+  # reviewing frontend role permissions and the generated fallbacks:
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
   workflow_dispatch:
     inputs:
       environment:
         required: true
-        default: staging
+        default: __TARGET_ENVIRONMENT__
         type: choice
         options: [staging, production]
 permissions:
@@ -842,11 +1245,12 @@ jobs:
       infrastructure_repository: __REPOSITORY__
       infrastructure_ref: __REF__
       application_name: __APP__
-      environment: ${{ inputs.environment }}
+      environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
       aws_region: __REGION__
       frontend_directory: __FRONTEND_DIRECTORY__
       build_command: __FRONTEND_BUILD_COMMAND__
       deploy_command: __FRONTEND_DEPLOY_COMMAND__
+      frontend_hostname: ${{ vars.FRONTEND_HOSTNAME || '__FRONTEND_HOSTNAME__' }}
       output_entrypoint: __FRONTEND_OUTPUT_ENTRYPOINT__
       frontend_url: ${{ vars.FRONTEND_URL || '__FRONTEND_URL__' }}
       api_url: ${{ vars.API_URL || '__API_URL__' }}
@@ -860,11 +1264,16 @@ EOF
   frontend_rollback="$(cat <<'EOF'
 name: poorman-aws frontend rollback
 on:
+  # Keep rollback manual by default. A future workflow_run trigger must
+  # supply a reviewed consumer_ref and explicit rollback confirmation:
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
   workflow_dispatch:
     inputs:
       environment:
         required: true
-        default: staging
+        default: __TARGET_ENVIRONMENT__
         type: choice
         options: [staging, production]
       consumer_ref:
@@ -881,11 +1290,12 @@ jobs:
       infrastructure_ref: __REF__
       consumer_ref: ${{ inputs.consumer_ref }}
       application_name: __APP__
-      environment: ${{ inputs.environment }}
+      environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
       aws_region: __REGION__
       frontend_directory: __FRONTEND_DIRECTORY__
       build_command: __FRONTEND_BUILD_COMMAND__
       deploy_command: __FRONTEND_DEPLOY_COMMAND__
+      frontend_hostname: ${{ vars.FRONTEND_HOSTNAME || '__FRONTEND_HOSTNAME__' }}
       output_entrypoint: __FRONTEND_OUTPUT_ENTRYPOINT__
       frontend_url: ${{ vars.FRONTEND_URL || '__FRONTEND_URL__' }}
       api_url: ${{ vars.API_URL || '__API_URL__' }}
@@ -899,6 +1309,11 @@ EOF
   frontend_lifecycle="$(cat <<'EOF'
 name: poorman-aws frontend lifecycle
 on:
+  # Keep lifecycle actions manual and confirmation-gated. Do not enable
+  # push, schedule, or workflow_run triggers without a teardown review:
+  # workflow_run:
+  #   workflows: ["CI"]
+  #   types: [completed]
   workflow_dispatch:
     inputs:
       action:
@@ -942,13 +1357,15 @@ jobs:
       aws_role_arn: ${{ secrets.__FRONTEND_ROLE_SECRET__ }}
 EOF
   )"
-  stage_onboarding_file .github/workflows/poorman-aws-backend-infra.yml "$(render_workflow "$infra")"
-  stage_onboarding_file .github/workflows/poorman-aws-backend-deploy.yml "$(render_workflow "$deploy")"
-  stage_onboarding_file .github/workflows/poorman-aws-backend-rollback.yml "$(render_workflow "$rollback")"
-  stage_onboarding_file .github/workflows/poorman-aws-backend-ami.yml "$(render_workflow "$ami")"
-  stage_onboarding_file .github/workflows/poorman-aws-lifecycle.yml "$(render_workflow "$lifecycle")"
-  stage_onboarding_file .github/workflows/poorman-aws-backend-parameters.yml "$(render_workflow "$parameters")"
-  if [[ -n "${values[frontend.frontend_url]}" || -n "${values[frontend.api_url]}" || -n "${values[frontend.frontend_hostname]}" ]]; then
+  if [[ "${values[deployment_shape]}" != frontend-only ]]; then
+    stage_onboarding_file .github/workflows/poorman-aws-backend-infra.yml "$(render_workflow "$infra")"
+    stage_onboarding_file .github/workflows/poorman-aws-backend-deploy.yml "$(render_workflow "$deploy")"
+    stage_onboarding_file .github/workflows/poorman-aws-backend-rollback.yml "$(render_workflow "$rollback")"
+    stage_onboarding_file .github/workflows/poorman-aws-backend-ami.yml "$(render_workflow "$ami")"
+    stage_onboarding_file .github/workflows/poorman-aws-lifecycle.yml "$(render_workflow "$lifecycle")"
+    stage_onboarding_file .github/workflows/poorman-aws-backend-parameters.yml "$(render_workflow "$parameters")"
+  fi
+  if [[ "${values[deployment_shape]}" != backend-only ]]; then
     stage_onboarding_file .github/workflows/poorman-aws-frontend-deploy.yml "$(render_workflow "$frontend_deploy")"
     stage_onboarding_file .github/workflows/poorman-aws-frontend-rollback.yml "$(render_workflow "$frontend_rollback")"
     stage_onboarding_file .github/workflows/poorman-aws-frontend-lifecycle.yml "$(render_workflow "$frontend_lifecycle")"
@@ -961,8 +1378,12 @@ write_onboarding_files() {
     target="${generated_targets[$index]}"
     source="${generated_sources[$index]}"
     if [[ -e "$target" ]] && ! cmp -s "$source" "$target"; then
+      if [[ "$target" == .poorman-aws.yml ]] && is_bootstrap_state_config "$target"; then
+        echo 'replacing the minimal state-bucket bootstrap configuration with the complete onboarding configuration'
+        continue
+      fi
       if [[ "$overwrite" != true ]]; then
-        echo "conflict: $target already exists and differs; rerun with --overwrite after reviewing it" >&2
+        echo "conflict: $target already exists and differs; rerun with --overwrite after reviewing their diffs displayed above" >&2
         conflict=true
       fi
     fi
@@ -980,8 +1401,25 @@ write_onboarding_files() {
       cp "$source" "$target"
       echo "generated $target"
     fi
+    if [[ "$target" == .poorman-aws.yml && "$dry_run" == false ]]; then
+      persist_consumer_config_state "$target"
+    fi
   done
   onboard_cleanup
+}
+
+is_bootstrap_state_config() {
+  local path="$1"
+  awk '
+    BEGIN { entries = 0; unexpected = 0 }
+    /^version: 1$/ { entries++; next }
+    /^application_name: '\''[^'\''[:cntrl:]]*'\''$/ { entries++; next }
+    /^aws:$/ { entries++; next }
+    /^  region: '\''[^'\''[:cntrl:]]*'\''$/ { entries++; next }
+    /^  state_bucket: '\''[^'\''[:cntrl:]]*'\''$/ { entries++; next }
+    NF { unexpected = 1 }
+    END { exit !(entries == 5 && unexpected == 0) }
+  ' "$path"
 }
 
 show_onboarding_diff() {
@@ -1001,11 +1439,12 @@ show_onboarding_diff() {
 }
 
 onboard() {
+  restore_install_state
   require_onboarding_values
   prepare_onboarding_files
   if [[ "$non_interactive" == false ]]; then
     show_onboarding_diff
-    printf 'Generate consumer integration files for %s? [y/N]: ' "${values[application_name]}" >&2
+    printf 'Generate consumer GitHub Actions workflow integration files for %s? [y/N]: ' "${values[application_name]}" >&2
     local confirmation
     IFS= read -r confirmation
     if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
@@ -1015,6 +1454,13 @@ onboard() {
     fi
   fi
   write_onboarding_files
+  cat <<'NEXT'
+next: review the generated GitHub Actions workflow integration files.
+next: when online, synchronize the consumer GitHub environments and AWS role secrets:
+  bin/poorman-aws --apply --confirm SYNC-GITHUB-ENVIRONMENTS github sync
+next: verify the local and remote prerequisites:
+  bin/poorman-aws --aws --github --docker --infra doctor
+NEXT
 }
 
 operational_environment() {
@@ -1055,6 +1501,21 @@ require_mutation_confirmation() {
   fi
 }
 
+confirm_state_bucket_creation() {
+  local answer
+  if [[ "$command_apply" == true ]]; then
+    require_mutation_confirmation CREATE-STATE-BUCKET
+    return 0
+  fi
+  if [[ "$automatic_state_bucket_bootstrap" == true && "$non_interactive" == false ]]; then
+    printf 'Type CREATE-STATE-BUCKET to create and harden %s: ' "${values[aws.state_bucket]}" >&2
+    IFS= read -r answer
+    [[ "$answer" == CREATE-STATE-BUCKET ]] || die 'confirmation did not match; state bucket creation cancelled'
+    return 0
+  fi
+  die 'mutating state-bucket setup requires --apply --confirm CREATE-STATE-BUCKET'
+}
+
 dispatch_workflow() {
   local workflow="$1" repo="$2" field run_args=()
   shift 2
@@ -1093,7 +1554,7 @@ parameters_adapter() {
     local parameter_args=(
       --environment "$environment"
       --application-name "${values[application_name]}"
-      --parameter-path "${values[backend.parameter_path]}"
+      --parameter-path "${values[backend.ssm_parameters_path]}"
       --from-env-file "$command_env_file"
     )
     local parameter
@@ -1153,6 +1614,9 @@ rollback_adapter() {
 ami_adapter() {
   local repo
   require_immutable_ref
+  command_subnet_id="${command_subnet_id:-${values[ami.subnet_id]}}"
+  command_ssh_cidr="${command_ssh_cidr:-${values[ami.ssh_cidr]}}"
+  command_ami_name_prefix="${command_ami_name_prefix:-${values[ami.name_prefix]}}"
   [[ -n "$command_subnet_id" && -n "$command_ssh_cidr" ]] ||
     die 'ami build requires --subnet-id and --ssh-cidr'
   command_ami_name_prefix="${command_ami_name_prefix:-${values[application_name]}-backend}"
@@ -1160,6 +1624,49 @@ ami_adapter() {
   dispatch_workflow poorman-aws-backend-ami.yml "$repo" \
     "subnet_id=$command_subnet_id" "ssh_cidr=$command_ssh_cidr" \
     "ami_name_prefix=$command_ami_name_prefix"
+}
+
+github_environment_sync() {
+  local repo account role_prefix environment role_arn ami_role_arn
+  command -v gh >/dev/null 2>&1 || die 'gh is required to synchronize GitHub environments'
+  gh auth status >/dev/null 2>&1 ||
+    die 'GitHub CLI authentication is required; run gh auth login with repository administration permission'
+  repo="$(consumer_repository)"
+  if [[ -z "$detected_aws_account" ]]; then
+    command -v aws >/dev/null 2>&1 || die 'aws is required to derive the environment role ARNs'
+    detected_aws_account="$(aws sts get-caller-identity --region "${values[aws.region]}" --query Account --output text 2>/dev/null || true)"
+  fi
+  [[ "$detected_aws_account" =~ ^[0-9]{12}$ ]] || die 'could not determine the AWS account ID for environment role synchronization'
+  require_mutation_confirmation SYNC-GITHUB-ENVIRONMENTS
+  role_prefix="${values[application_name]}-github"
+  ami_role_arn="arn:aws:iam::${detected_aws_account}:role/${role_prefix}-ami-build"
+  for environment in staging production ami-build; do
+    role_arn="arn:aws:iam::${detected_aws_account}:role/${role_prefix}-${environment}"
+    if [[ "$dry_run" == true ]]; then
+      echo "would ensure GitHub environment: $environment"
+      echo "would set secret: $environment/AWS_ROLE_ARN"
+      if [[ "$environment" != ami-build ]]; then
+        echo "would set secret: $environment/AWS_AMI_ROLE_ARN"
+      fi
+    else
+      gh api --method PUT "repos/${repo}/environments/${environment}" >/dev/null
+      printf '%s' "$role_arn" | gh secret set AWS_ROLE_ARN --env "$environment" --repo "$repo" >/dev/null
+      if [[ "$environment" != ami-build ]]; then
+        printf '%s' "$ami_role_arn" | gh secret set AWS_AMI_ROLE_ARN --env "$environment" --repo "$repo" >/dev/null
+      fi
+      echo "synchronized GitHub environment: $environment"
+    fi
+  done
+  if [[ "${values[deployment_shape]}" != backend-only ]]; then
+    for environment in staging production; do
+      role_arn="arn:aws:iam::${detected_aws_account}:role/${role_prefix}-frontend-${environment}"
+      if [[ "$dry_run" == true ]]; then
+        echo "would set secret: $environment/AWS_FRONTEND_ROLE_ARN"
+      else
+        printf '%s' "$role_arn" | gh secret set AWS_FRONTEND_ROLE_ARN --env "$environment" --repo "$repo" >/dev/null
+      fi
+    done
+  fi
 }
 
 lifecycle_adapter() {
@@ -1269,6 +1776,9 @@ operational_adapter() {
     ami)
       [[ "${command_args[0]:-build}" == build ]] || die 'usage: ami build'
       ami_adapter ;;
+    github)
+      [[ "${command_args[0]:-}" == sync ]] || die 'usage: github sync'
+      github_environment_sync ;;
     *) die "unsupported operational command: $command_name" ;;
   esac
 }
@@ -1355,6 +1865,7 @@ doctor_consumer_contract() {
   if [[ -z "${values[aws.state_bucket]-}" ]]; then
     doctor_fail 'aws.state_bucket' \
       'set the encrypted remote OpenTofu state bucket in YAML or with --state-bucket'
+    echo 'next: run bootstrap state-bucket to create or verify the remote state bucket' >&2
   else
     echo "ok: aws.state_bucket (${values[aws.state_bucket]})"
   fi
@@ -1386,6 +1897,8 @@ doctor_aws() {
   identity="$(aws sts get-caller-identity --region "${values[aws.region]}" --output json 2>/dev/null || true)"
   account="$(jq -r '.Account // empty' <<<"$identity" 2>/dev/null || true)"
   if [[ "$account" =~ ^[0-9]{12}$ ]]; then
+    detected_aws_account="$account"
+    detected_aws_caller="$(jq -r '.Arn // empty' <<<"$identity" 2>/dev/null || true)"
     echo "ok: AWS identity (account $account, region ${values[aws.region]})"
   else
     doctor_fail 'AWS identity' \
@@ -1401,6 +1914,379 @@ doctor_github() {
   else
     doctor_fail 'GitHub CLI authentication' 'run gh auth login with a token allowed to manage the requested repository'
   fi
+}
+
+install_aws_auth() {
+  local identity account answer
+  doctor_command aws 'install AWS CLI v2; prefer AWS IAM Identity Center (SSO) for local authentication'
+  command -v aws >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  identity="$(aws sts get-caller-identity --region "${values[aws.region]}" --output json 2>/dev/null || true)"
+  account="$(jq -r '.Account // empty' <<<"$identity" 2>/dev/null || true)"
+  if [[ "$account" =~ ^[0-9]{12}$ ]]; then
+    detected_aws_account="$account"
+    detected_aws_caller="$(jq -r '.Arn // empty' <<<"$identity" 2>/dev/null || true)"
+    echo "ok: AWS identity (account $account, region ${values[aws.region]})"
+    return 0
+  fi
+  if [[ "$dry_run" == true ]]; then
+    echo 'would offer: aws configure sso'
+  elif [[ "$setup_auth" == true && "$non_interactive" == false ]]; then
+    printf 'AWS authentication is unavailable. Run "aws configure sso" now? [y/N]: ' >&2
+    IFS= read -r answer
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+      aws configure sso
+      identity="$(aws sts get-caller-identity --region "${values[aws.region]}" --output json 2>/dev/null || true)"
+      account="$(jq -r '.Account // empty' <<<"$identity" 2>/dev/null || true)"
+      detected_aws_account="$account"
+      detected_aws_caller="$(jq -r '.Arn // empty' <<<"$identity" 2>/dev/null || true)"
+    fi
+  fi
+  if [[ "$account" =~ ^[0-9]{12}$ ]]; then
+    detected_aws_account="$account"
+    echo "ok: AWS identity (account $account, region ${values[aws.region]})"
+  else
+    doctor_fail 'AWS identity' \
+      'run aws configure sso (recommended) or configure an allowed AWS profile, then rerun install'
+  fi
+}
+
+prompt_install_application_name() {
+  local suggestion answer
+  if [[ "${sources[application_name]}" != default ]]; then
+    echo "Application name: ${values[application_name]}"
+    return 0
+  fi
+  suggestion="$(basename "$PWD" | tr '[:upper:]_' '[:lower:]-' | sed 's/[^a-z0-9-]/-/g; s/^-*//; s/-*$//')"
+  [[ "$suggestion" =~ ^[a-z][a-z0-9-]{1,32}$ ]] || suggestion=application
+  set_value application_name "$suggestion" detected
+  if [[ "$non_interactive" == true || "$dry_run" == true ]]; then
+    echo "Application name: $suggestion"
+    return 0
+  fi
+  printf 'Application name [%s]: ' "$suggestion" >&2
+  IFS= read -r answer
+  if [[ -n "$answer" ]]; then
+    set_value application_name "$answer" prompt
+  fi
+  validate_values
+}
+
+select_aws_profile() {
+  local profiles suggested selected profile
+  command -v aws >/dev/null 2>&1 || return 0
+  if [[ -n "${AWS_PROFILE:-}" ]]; then
+    if [[ "$update_install" == true ]]; then
+      echo "AWS profile: $AWS_PROFILE (from AWS_PROFILE)"
+    else
+      echo "AWS profile: $AWS_PROFILE"
+    fi
+    return 0
+  fi
+
+  profiles="$(aws configure list-profiles 2>/dev/null || true)"
+  suggested='default'
+  while IFS= read -r profile; do
+    [[ -n "$profile" ]] || continue
+    if [[ "${profile,,}" == administrator ]]; then
+      suggested="$profile"
+      break
+    fi
+    if [[ "${profile,,}" == admin && "$suggested" == default ]]; then
+      suggested="$profile"
+    fi
+  done <<<"$profiles"
+  if [[ "$suggested" == default && -n "$profiles" ]]; then
+    suggested="${profiles%%$'\n'*}"
+  fi
+
+  selected="$suggested"
+  if [[ "$non_interactive" == false && "$dry_run" == false ]]; then
+    printf 'AWS profile to use [%s]: ' "$suggested" >&2
+    IFS= read -r selected
+    selected="${selected:-$suggested}"
+  fi
+  if [[ -n "$profiles" ]] && ! grep -Fxq "$selected" <<<"$profiles"; then
+    die "AWS profile not found: $selected"
+  fi
+  export AWS_PROFILE="$selected"
+  echo "AWS profile: $AWS_PROFILE"
+}
+
+validate_aws_region() {
+  local region="$1" available
+  [[ "$region" =~ ^[a-z0-9-]+$ ]] || die "invalid AWS region: $region"
+  available="$(aws ec2 describe-regions \
+    --region us-east-1 \
+    --all-regions \
+    --query "Regions[?RegionName=='$region'].RegionName | [0]" \
+    --output text 2>/dev/null || true)"
+  [[ "$available" == "$region" ]] || die "AWS region is not available: $region"
+}
+
+select_aws_region() {
+  local configured answer selected
+  if [[ "${sources[aws.region]}" == default ]]; then
+    configured="$(aws configure get region --profile "$AWS_PROFILE" 2>/dev/null || true)"
+    if [[ -n "$configured" ]]; then
+      set_value aws.region "$configured" profile
+    elif [[ "$non_interactive" == true ]]; then
+      die 'AWS profile has no region; set aws.region in YAML or pass --aws-region'
+    else
+      printf 'AWS region [%s]: ' "${values[aws.region]}" >&2
+      IFS= read -r answer
+      selected="${answer:-${values[aws.region]}}"
+      set_value aws.region "$selected" prompt
+    fi
+  fi
+  validate_aws_region "${values[aws.region]}"
+  aws configure --profile "$AWS_PROFILE" set region "${values[aws.region]}"
+  echo "AWS region: ${values[aws.region]}"
+  validate_values
+}
+
+check_aws_setup_privileges() {
+  local simulation action decision
+  local -a actions=(
+    s3:CreateBucket
+    s3:PutBucketVersioning
+    s3:PutBucketEncryption
+    s3:PutPublicAccessBlock
+    iam:CreateOpenIDConnectProvider
+    iam:GetOpenIDConnectProvider
+    iam:CreateRole
+    iam:PutRolePolicy
+    iam:AttachRolePolicy
+    route53:ListHostedZonesByName
+    route53:ChangeResourceRecordSets
+  )
+
+  [[ -n "$detected_aws_caller" ]] || {
+    doctor_fail 'AWS setup authorization' \
+      'AWS caller identity is unavailable; authenticate an administrator-capable profile'
+    return
+  }
+
+  echo 'AWS setup authorization (read-only IAM simulation):'
+  simulation="$(aws iam simulate-principal-policy \
+    --policy-source-arn "$detected_aws_caller" \
+    --action-names "${actions[@]}" \
+    --output json 2>/dev/null || true)"
+  if [[ -z "$simulation" ]]; then
+    aws_setup_privileges=unknown
+    doctor_fail 'AWS setup authorization' \
+      'IAM policy simulation was unavailable; use a profile allowed to simulate its effective policy or review the required setup permissions manually'
+    return
+  fi
+
+  aws_setup_privileges=passed
+  while IFS=$'\t' read -r action decision; do
+    [[ -n "$action" ]] || continue
+    if [[ "$decision" == allowed ]]; then
+      echo "ok: $action"
+    else
+      aws_setup_privileges=failed
+      echo "missing: $action ($decision)" >&2
+      doctor_failure=1
+    fi
+  done < <(jq -r '.EvaluationResults[] | [.EvalActionName, .EvalDecision] | @tsv' <<<"$simulation")
+
+  for action in "${actions[@]}"; do
+    if ! jq -e --arg action "$action" '.EvaluationResults[] | select(.EvalActionName == $action)' \
+      <<<"$simulation" >/dev/null; then
+      aws_setup_privileges=unknown
+      doctor_fail "AWS setup authorization: $action" 'IAM simulation returned no decision for this required action'
+    fi
+  done
+}
+
+install_github_auth() {
+  local answer
+  doctor_command gh 'install GitHub CLI and run gh auth login'
+  command -v gh >/dev/null 2>&1 || return 0
+  if gh auth status >/dev/null 2>&1; then
+    echo 'ok: GitHub CLI authentication'
+    return 0
+  fi
+  if [[ "$dry_run" == true ]]; then
+    echo 'would offer: gh auth login'
+  elif [[ "$setup_auth" == true && "$non_interactive" == false ]]; then
+    printf 'GitHub CLI is not authenticated. Run "gh auth login" now? [y/N]: ' >&2
+    IFS= read -r answer
+    [[ "$answer" =~ ^[Yy]$ ]] && gh auth login
+  fi
+  if gh auth status >/dev/null 2>&1; then
+    echo 'ok: GitHub CLI authentication'
+  else
+    doctor_fail 'GitHub CLI authentication' \
+      'run gh auth login with permission to manage the consumer repository, then rerun install'
+  fi
+}
+
+install_command() {
+  restore_install_state
+  prompt_install_application_name
+  echo "state: $(write_install_state incomplete)"
+  doctor_failure=0
+  doctor_command bash 'install Bash 4+ or use the supported system package'
+  doctor_command curl 'install curl for pinned raw-wrapper consumption'
+  doctor_command jq 'install jq for structured AWS and workflow output'
+  doctor_command git 'install Git and run this command from the consumer repository'
+  if (command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1) ||
+     (command -v ruby >/dev/null 2>&1 && ruby -e 'require "yaml"' >/dev/null 2>&1); then
+    echo 'ok: YAML parser (Python PyYAML or Ruby Psych)'
+  else
+    doctor_fail 'YAML parser' 'install Python 3 with PyYAML or Ruby with Psych'
+  fi
+
+  if [[ "$offline" == true ]]; then
+    echo 'info: offline mode skips AWS and GitHub authentication checks'
+  else
+    select_aws_profile
+    select_aws_region
+    install_aws_auth
+  if [[ -z "${values[aws.state_bucket]-}" ]]; then
+    if [[ "$aws_setup_privileges" == passed && "$update_install" != true ]]; then
+      echo 'AWS setup authorization: passed (saved installer state)'
+    else
+      check_aws_setup_privileges
+    fi
+    if [[ -z "${values[aws.state_bucket]-}" && "$aws_setup_privileges" == passed && "$doctor_failure" -eq 0 ]]; then
+      echo 'next: guided setup will create and harden the remote OpenTofu state bucket'
+      automatic_state_bucket_bootstrap=true
+      bootstrap_state_bucket
+      automatic_state_bucket_bootstrap=false
+    fi
+    fi
+    install_github_auth
+  fi
+  echo "state: $(write_install_state incomplete)"
+  doctor_consumer_contract
+  if [[ "$check_docker" == true ]]; then doctor_docker; fi
+  if [[ "$check_infra" == true ]]; then
+    doctor_command tofu 'install OpenTofu for infrastructure planning'
+  fi
+  if [[ "$check_ami" == true ]]; then
+    doctor_command packer 'install Packer for reviewed host AMI builds'
+    doctor_command zstd 'install zstd for release and AMI artifact compression'
+  fi
+  [[ "$doctor_failure" -eq 0 ]] || die 'installation checks failed; follow the remediation hints and rerun install'
+  echo 'installation checks passed'
+  echo "state: $(write_install_state passed)"
+  if [[ "$non_interactive" == false && "$dry_run" == false && -t 0 ]]; then
+    local answer
+    printf 'Continue to onboarding now? [Y/n]: ' >&2
+    IFS= read -r answer
+    if [[ ! "$answer" =~ ^[Nn]$ ]]; then
+      onboard
+    else
+      echo 'paused after installation; continue with the fast path: bin/poorman-aws onboard'
+      echo 'to rerun the full installation checks: bin/poorman-aws install'
+    fi
+  else
+    echo 'next: run onboard to generate the consumer GitHub Actions workflow integration files:'
+    echo '  bin/poorman-aws onboard'
+    echo 'next: then, when online, synchronize GitHub environments:'
+    echo '  bin/poorman-aws --apply --confirm SYNC-GITHUB-ENVIRONMENTS github sync'
+    echo 'next: verify prerequisites:'
+    echo '  bin/poorman-aws --aws --github --docker --infra doctor'
+  fi
+}
+
+persist_state_bucket_config() {
+  local existing_config=''
+  if [[ "$config_explicit" == true || -f .poorman-aws.yml || -f .poorman-aws.yaml ]]; then
+    if [[ -f .poorman-aws.yml ]]; then
+      existing_config=.poorman-aws.yml
+    elif [[ -f .poorman-aws.yaml ]]; then
+      existing_config=.poorman-aws.yaml
+    fi
+    [[ -z "$existing_config" ]] || persist_consumer_config_state "$existing_config"
+    echo 'state bucket recorded in installer state; existing consumer configuration was not overwritten'
+    return 0
+  fi
+  cat > .poorman-aws.yml <<EOF
+version: 1
+application_name: $(yaml_quote "${values[application_name]}")
+aws:
+  region: $(yaml_quote "${values[aws.region]}")
+  state_bucket: $(yaml_quote "${values[aws.state_bucket]}")
+EOF
+  persist_consumer_config_state .poorman-aws.yml
+  echo 'generated .poorman-aws.yml with the verified state bucket'
+}
+
+bootstrap_state_bucket() {
+  local bucket suggested existing=false
+  if [[ "$command_name" == bootstrap ]]; then
+    [[ "${command_args[0]:-}" == state-bucket ]] || die 'usage: bootstrap state-bucket'
+  fi
+  restore_install_state
+  prompt_install_application_name
+  command -v aws >/dev/null 2>&1 || die 'aws CLI is required for state-bucket bootstrap'
+  select_aws_profile
+  select_aws_region
+  doctor_failure=0
+  install_aws_auth
+  [[ "$doctor_failure" -eq 0 && -n "$detected_aws_account" ]] ||
+    die 'AWS identity is required for state-bucket bootstrap'
+
+  bucket="${values[aws.state_bucket]-}"
+  if [[ -z "$bucket" ]]; then
+    suggested="${values[application_name]}-tofu-state-${detected_aws_account}"
+    if [[ "$non_interactive" == true ]]; then
+      bucket="$suggested"
+    else
+      printf 'OpenTofu state bucket [%s]: ' "$suggested" >&2
+      IFS= read -r bucket
+      bucket="${bucket:-$suggested}"
+    fi
+    set_value aws.state_bucket "$bucket" prompt
+  fi
+  [[ "$bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] ||
+    die 'state bucket must be a valid globally unique S3 bucket name'
+
+  if aws s3api head-bucket --bucket "$bucket" >/dev/null 2>&1; then
+    existing=true
+    echo "state bucket exists: $bucket"
+  else
+    echo "state bucket missing: $bucket"
+  fi
+
+  if [[ "$existing" != true ]]; then
+    if [[ "$dry_run" == true ]]; then
+      echo "would create and harden state bucket: $bucket"
+      echo 're-run with --apply --confirm CREATE-STATE-BUCKET to create it'
+      return 0
+    fi
+    confirm_state_bucket_creation
+    if [[ "${values[aws.region]}" == us-east-1 ]]; then
+      aws s3api create-bucket --bucket "$bucket" --region "${values[aws.region]}"
+    else
+      aws s3api create-bucket --bucket "$bucket" --region "${values[aws.region]}" \
+        --create-bucket-configuration "LocationConstraint=${values[aws.region]}"
+    fi
+    aws s3api put-public-access-block --bucket "$bucket" \
+      --public-access-block-configuration \
+      BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+    aws s3api put-bucket-versioning --bucket "$bucket" \
+      --versioning-configuration Status=Enabled
+    aws s3api put-bucket-encryption --bucket "$bucket" \
+      --server-side-encryption-configuration \
+      '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+  fi
+
+  if [[ "$dry_run" == true ]]; then
+    echo "would verify state bucket encryption, versioning, and public-access blocking"
+    return 0
+  fi
+  aws s3api get-bucket-versioning --bucket "$bucket" >/dev/null
+  aws s3api get-bucket-encryption --bucket "$bucket" >/dev/null
+  aws s3api get-public-access-block --bucket "$bucket" >/dev/null
+  set_value aws.state_bucket "$bucket" bootstrap
+  write_install_state passed bootstrap-state-bucket >/dev/null
+  persist_state_bucket_config
+  echo "verified state bucket: $bucket"
 }
 
 doctor() {
@@ -1444,11 +2330,17 @@ main() {
   parse_args "$@"
   # no-op that evaluates variables without executing them as commands to silence shellcheck's warnings
   : "$non_interactive" "$dry_run"
+  resolve_consumer_root
+  case "$command_name" in
+    install|onboard) prompt_consumer_root ;;
+  esac
   load_defaults
   load_config
   apply_cli_values
   validate_values
   case "$command_name" in
+    install) install_command ;;
+    bootstrap) bootstrap_state_bucket ;;
     config)
       case "${command_args[0]:-}" in
         validate) echo 'configuration valid' ;;
@@ -1457,7 +2349,7 @@ main() {
       esac ;;
     doctor) doctor ;;
     onboard) onboard ;;
-    parameters|ami|plan|apply|release|rollback|lifecycle|frontend)
+    parameters|ami|plan|apply|release|rollback|lifecycle|frontend|github)
       operational_adapter ;;
     help) usage ;;
     *) die "unknown command: $command_name" ;;

@@ -36,7 +36,9 @@ artifact_name="poorman-aws-$version"
 artifact_path="$output_directory/$artifact_name"
 checksum_path="$artifact_path.sha256"
 notes_path="$output_directory/release-notes.md"
-sed "s/poorman-aws wrapper contract 0.1.0/poorman-aws wrapper contract $version/" \
+sed \
+  -e "s/poorman-aws wrapper contract 0.1.0/poorman-aws wrapper contract $version/" \
+  -e "s/wrapper_release_ref='v0.1.0'/wrapper_release_ref='$version'/" \
   "$wrapper_source" >"$artifact_path"
 chmod 0755 "$artifact_path"
 (cd "$output_directory" && sha256sum "$artifact_name") >"$checksum_path"
