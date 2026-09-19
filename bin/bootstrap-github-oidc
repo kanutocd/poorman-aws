@@ -28,6 +28,8 @@ Options:
                             Prefix for environment frontend buckets
   --frontend-parameter-path PATH
                             SSM path for frontend deployment parameters
+  --ssm-parameter-path PATH
+                            SSM path for backend runtime parameters
   --policy-output-dir DIR  Write generated policy JSON files to DIR during dry runs
   --apply                    Create or update the provider, roles, and policies
   --help                     Show this help
@@ -59,6 +61,7 @@ frontend_state_prefix="${FRONTEND_STATE_PREFIX:-${application_name}-frontend-sta
 frontend_assets_prefix="${FRONTEND_ASSETS_PREFIX:-${application_name}-frontend-assets-}"
 frontend_bucket_prefix="${FRONTEND_BUCKET_PREFIX:-${application_name}-frontend-}"
 frontend_parameter_path="${FRONTEND_PARAMETER_PATH:-/${application_name}/frontend}"
+ssm_parameter_path="${SSM_PARAMETER_PATH:-/application}"
 policy_output_dir=''
 apply=false
 
@@ -127,6 +130,11 @@ while [[ $# -gt 0 ]]; do
       frontend_parameter_path="$2"
       shift 2
       ;;
+    --ssm-parameter-path)
+      [[ $# -ge 2 ]] || die "--ssm-parameter-path requires an SSM path"
+      ssm_parameter_path="$2"
+      shift 2
+      ;;
     --policy-output-dir)
       [[ $# -ge 2 ]] || die "--policy-output-dir requires a directory"
       policy_output_dir="$2"
@@ -156,6 +164,7 @@ command -v aws >/dev/null 2>&1 || die "aws CLI is required"
 [[ "$frontend_assets_prefix" =~ ^[a-z0-9][a-z0-9.-]{1,60}$ ]] || die "--frontend-assets-prefix must be a valid bucket-name prefix"
 [[ "$frontend_bucket_prefix" =~ ^[a-z0-9][a-z0-9.-]{1,60}$ ]] || die "--frontend-bucket-prefix must be a valid bucket-name prefix"
 [[ "$frontend_parameter_path" =~ ^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ ]] || die "--frontend-parameter-path must be an absolute SSM path"
+[[ "$ssm_parameter_path" =~ ^/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ ]] || die "--ssm-parameter-path must be an absolute SSM path"
 if [[ -z "$role_prefix" ]]; then
   role_prefix="${application_name}-github"
 fi
@@ -264,6 +273,7 @@ write_deployment_policy() {
   local backend_profile_arn="arn:aws:iam::${account_id}:instance-profile/${application_name}-${environment}-backend-*"
   local artifact_name="${application_name}-${environment}-backend"
   local artifact_bucket_prefix
+  local runtime_parameter_arn="arn:aws:ssm:${region}:${account_id}:parameter${ssm_parameter_path}/*"
   artifact_bucket_prefix="${artifact_name:0:17}-$(printf '%s' "$artifact_name" | sha1sum | cut -c1-8)-artifacts-"
   local artifact_bucket_arn="arn:aws:s3:::${artifact_bucket_prefix}*"
 
@@ -437,6 +447,12 @@ write_deployment_policy() {
         "ssm:ListCommandInvocations"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "ManageEnvironmentParameters",
+      "Effect": "Allow",
+      "Action": ["ssm:DeleteParameter", "ssm:GetParameter", "ssm:PutParameter"],
+      "Resource": "${runtime_parameter_arn}"
     },
     {
       "Sid": "ManageFrontendCertificate",

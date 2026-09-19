@@ -19,6 +19,9 @@ All notable changes to this project are documented in this file.
 - Standardized the backend-parameter workflow contract on
   `ssm_parameter_path` and `SSM_PARAMETER_PATH`, while retaining
   `--ssm-parameter-path` as the only supported CLI spelling.
+- Added narrowly scoped `ssm:GetParameter`, `ssm:PutParameter`, and
+  `ssm:DeleteParameter` permissions for the backend runtime parameter path in
+  the GitHub staging and production roles.
 - Added a guarded pre-plan repair for tainted retained EIPs. The reusable
   infrastructure workflow now verifies the live allocation and ownership tags
   before untainting only the matching OpenTofu state entry from the raw state,
