@@ -242,6 +242,53 @@ jobs:
           -backend-config="encrypt=true"
           -backend-config="use_lockfile=true"
 
+      - name: Repair tainted retained EIP state
+        if: inputs.retain_eip
+        working-directory: poorman-aws/backend
+        env:
+          EXPECTED_APPLICATION: ${{ inputs.application_name }}
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+
+          state_json="$(tofu show -json 2>/dev/null || true)"
+          tainted_allocation_id="$(jq -r '
+            .. | objects |
+            select(.address? == "module.compute.aws_eip.this" and .status? == "tainted") |
+            .values.id // empty
+          ' <<<"$state_json" | head -n 1)"
+          if [[ -z "$tainted_allocation_id" ]]; then
+            echo 'No tainted retained EIP state found.'
+            exit 0
+          fi
+
+          echo "Found tainted retained EIP state: $tainted_allocation_id"
+          eip_metadata=''
+          # shellcheck disable=SC2016
+          for attempt in 1 2 3 4; do
+            if eip_metadata="$(aws ec2 describe-addresses \
+              --region "$AWS_REGION" \
+              --allocation-ids "$tainted_allocation_id" \
+              --query 'Addresses[0].[AllocationId,Tags[?Key==`Application`].Value | [0],Tags[?Key==`Environment`].Value | [0],Tags[?Key==`ManagedBy`].Value | [0],Tags[?Key==`Component`].Value | [0]]' \
+              --output text 2>/dev/null)" && [[ "$eip_metadata" != 'None' ]]; then
+              break
+            fi
+            [[ "$attempt" -eq 4 ]] || sleep $((attempt * 2))
+          done
+
+          read -r actual_allocation_id actual_application actual_environment actual_managed_by actual_component <<<"$eip_metadata"
+          [[ "$actual_allocation_id" == "$tainted_allocation_id" &&
+            "$actual_application" == "$EXPECTED_APPLICATION" &&
+            "$actual_environment" == "$EXPECTED_ENVIRONMENT" &&
+            "$actual_managed_by" == 'opentofu' &&
+            "$actual_component" == 'backend' ]] || {
+            echo 'Refusing to untaint EIP: live allocation or ownership tags do not match.' >&2
+            exit 1
+          }
+
+          tofu untaint module.compute.aws_eip.this
+          echo "Untainted verified retained EIP: $tainted_allocation_id"
+
       - name: Create reviewed plan
         working-directory: poorman-aws/backend
         run: tofu plan -out=backend.tfplan
