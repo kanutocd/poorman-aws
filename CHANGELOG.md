@@ -15,6 +15,8 @@ All notable changes to this project are documented in this file.
   EC2 instance launches and S3 VPC endpoint creation.
 - Added the EC2 instance-type and prefix-list describe permissions required by
   OpenTofu while refreshing the instance and S3 gateway endpoint resources.
+- Added `ec2:DescribeInstanceCreditSpecifications` for refreshing burstable EC2
+  instance state such as `t4g.micro`.
 
 - Bounded generated deployment-artifact bucket prefixes to AWS's 37-character
   limit while retaining a readable application prefix and deterministic hash,
