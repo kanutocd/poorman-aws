@@ -124,6 +124,7 @@ assert_contains '--cache-from "type=gha,scope=${cache_scope}"' "$project_root/bi
 assert_contains '--cache-to "type=gha,mode=max,scope=${cache_scope}"' "$project_root/bin/deploy-backend"
 assert_contains 'DOCKER_BUILD_CACHE: gha' "$project_root/.github/workflows/deploy-backend.yml"
 assert_contains 'actions: write' "$project_root/.github/workflows/deploy-backend.yml"
+assert_contains 'uses: crazy-max/ghaction-github-runtime@v3' "$project_root/.github/workflows/deploy-backend.yml"
 assert_contains 'if: always() && needs.guard.result == '\''success'\''' "$ami_workflow"
 assert_contains 'PoormanAwsBuildRun' "$project_root/backend/packer/application-backend.pkr.hcl"
 assert_contains 'packer build -on-error=cleanup' "$project_root/bin/build-backend-ami"
