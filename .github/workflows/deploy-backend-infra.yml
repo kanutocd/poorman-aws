@@ -251,11 +251,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          state_json="$(tofu show -json 2>/dev/null || true)"
+          state_json="$(tofu state pull 2>/dev/null || true)"
           tainted_allocation_id="$(jq -r '
-            .. | objects |
-            select(.address? == "module.compute.aws_eip.this" and .status? == "tainted") |
-            .values.id // empty
+            .resources[]? |
+            select(.module? == "module.compute" and .type? == "aws_eip" and .name? == "this") |
+            .instances[]? |
+            select(.status? == "tainted") |
+            .attributes.id // empty
           ' <<<"$state_json" | head -n 1)"
           if [[ -z "$tainted_allocation_id" ]]; then
             echo 'No tainted retained EIP state found.'

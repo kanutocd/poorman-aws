@@ -6,8 +6,9 @@ All notable changes to this project are documented in this file.
 
 - Added a guarded pre-plan repair for tainted retained EIPs. The reusable
   infrastructure workflow now verifies the live allocation and ownership tags
-  before untainting only the matching OpenTofu state entry, preventing a
-  transient AWS read failure from attempting to replace a retained EIP.
+  before untainting only the matching OpenTofu state entry from the raw state,
+  preventing a transient AWS read failure from attempting to replace a
+  retained EIP.
 - Fixed the deployment-role IAM contract for staging and production applies by
   allowing managed SSM policy attachment, EIP attribute reads, and the
   untagged-first network resource creation pattern used by OpenTofu.

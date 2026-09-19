@@ -112,6 +112,8 @@ assert_absent 'environment_admin_token' "$project_root/.github/workflows/deploy-
 assert_contains 'secrets: inherit' "$project_root/.github/workflows/deploy-backend-infra.yml"
 assert_contains 'needs.build_or_resolve_ami.outputs.ami_id' "$project_root/.github/workflows/deploy-backend-infra.yml"
 assert_contains 'Repair tainted retained EIP state' "$project_root/.github/workflows/deploy-backend-infra.yml"
+assert_contains 'tofu state pull' "$project_root/.github/workflows/deploy-backend-infra.yml"
+assert_contains 'select(.status? == "tainted")' "$project_root/.github/workflows/deploy-backend-infra.yml"
 assert_contains 'tofu untaint module.compute.aws_eip.this' "$project_root/.github/workflows/deploy-backend-infra.yml"
 assert_contains 'Refusing to untaint EIP: live allocation or ownership tags do not match.' "$project_root/.github/workflows/deploy-backend-infra.yml"
 assert_absent 'Resolve AMI ID from artifact or environment variable' "$project_root/.github/workflows/deploy-backend-infra.yml"
