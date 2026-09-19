@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Added the temporary EC2 key-pair create/delete permissions required by the
+  Packer AMI builder to the narrowly scoped AMI-build role policy.
+- Added the temporary EC2 instance lifecycle permissions Packer needs to stop
+  and resume the builder while creating the AMI.
+- Extended failure cleanup to terminate tagged temporary builder instances and
+  delete tagged temporary Packer key pairs, not only temporary security groups.
+- Added the AMI attribute and deregistration permissions required for Packer to
+  finalize an image and roll it back safely when finalization fails.
+
 - Improved generated consumer workflow names with descriptive title-style
   labels, including the `poorman-aws` product name and the operation being
   performed.

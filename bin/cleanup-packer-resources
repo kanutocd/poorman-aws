@@ -21,6 +21,71 @@ done
 command -v aws >/dev/null 2>&1 || { echo 'aws CLI is required' >&2; exit 1; }
 
 retry_delays=(0 2 5 10)
+cleanup_failed=0
+
+temporary_instances=''
+describe_succeeded=0
+for delay in "${retry_delays[@]}"; do
+  ((delay == 0)) || sleep "$delay"
+  if temporary_instances="$(aws ec2 describe-instances \
+    --region "$aws_region" \
+    --filters "Name=tag:PoormanAwsBuildRun,Values=$build_run_id" \
+              'Name=tag:ManagedBy,Values=poorman-aws' \
+              'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null)"; then
+    describe_succeeded=1
+    break
+  fi
+done
+
+if ((describe_succeeded == 0)); then
+  echo "failed to find temporary Packer instances for build run: $build_run_id" >&2
+  cleanup_failed=1
+else
+  for instance_id in $temporary_instances; do
+    terminated=0
+    for delay in "${retry_delays[@]}"; do
+      ((delay == 0)) || sleep "$delay"
+      if aws ec2 terminate-instances --region "$aws_region" \
+        --instance-ids "$instance_id" >/dev/null 2>&1; then
+        echo "terminated temporary Packer instance: $instance_id"
+        terminated=1
+        break
+      fi
+    done
+    if ((terminated == 0)); then
+      echo "failed to terminate temporary Packer instance: $instance_id" >&2
+      cleanup_failed=1
+    fi
+  done
+fi
+
+temporary_key_pairs=''
+if ! temporary_key_pairs="$(aws ec2 describe-key-pairs \
+  --region "$aws_region" \
+  --filters "Name=tag:PoormanAwsBuildRun,Values=$build_run_id" \
+            'Name=tag:ManagedBy,Values=poorman-aws' \
+  --query 'KeyPairs[].KeyName' --output text 2>/dev/null)"; then
+  echo "failed to find temporary Packer key pairs for build run: $build_run_id" >&2
+  cleanup_failed=1
+fi
+for key_name in $temporary_key_pairs; do
+  deleted=0
+  for delay in "${retry_delays[@]}"; do
+    ((delay == 0)) || sleep "$delay"
+    if aws ec2 delete-key-pair --region "$aws_region" \
+      --key-name "$key_name" >/dev/null 2>&1; then
+      echo "deleted temporary Packer key pair: $key_name"
+      deleted=1
+      break
+    fi
+  done
+  if ((deleted == 0)); then
+    echo "failed to delete temporary Packer key pair: $key_name" >&2
+    cleanup_failed=1
+  fi
+done
+
 security_groups=''
 describe_succeeded=0
 for delay in "${retry_delays[@]}"; do
@@ -37,24 +102,24 @@ done
 
 ((describe_succeeded == 1)) || {
   echo "failed to find temporary Packer resources for build run: $build_run_id" >&2
-  exit 1
+  exit "$((cleanup_failed + 1))"
 }
-[[ -n "$security_groups" && "$security_groups" != None ]] || exit 0
-cleanup_failed=0
-for security_group_id in $security_groups; do
-  cleaned=0
-  for delay in 0 2 5 10; do
-    ((delay == 0)) || sleep "$delay"
-    if aws ec2 delete-security-group --region "$aws_region" \
-      --group-id "$security_group_id" >/dev/null 2>&1; then
-      echo "cleaned temporary Packer security group: $security_group_id"
-      cleaned=1
-      break
+if [[ -n "$security_groups" && "$security_groups" != None ]]; then
+  for security_group_id in $security_groups; do
+    cleaned=0
+    for delay in "${retry_delays[@]}"; do
+      ((delay == 0)) || sleep "$delay"
+      if aws ec2 delete-security-group --region "$aws_region" \
+        --group-id "$security_group_id" >/dev/null 2>&1; then
+        echo "cleaned temporary Packer security group: $security_group_id"
+        cleaned=1
+        break
+      fi
+    done
+    if ((cleaned == 0)); then
+      echo "failed to clean temporary Packer security group: $security_group_id" >&2
+      cleanup_failed=1
     fi
   done
-  if ((cleaned == 0)); then
-    echo "failed to clean temporary Packer security group: $security_group_id" >&2
-    cleanup_failed=1
-  fi
-done
+fi
 exit "$cleanup_failed"

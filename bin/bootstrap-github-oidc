@@ -620,13 +620,14 @@ write_ami_policy() {
       "Action": [
         "ec2:AllocateAddress", "ec2:AssociateAddress",
         "ec2:AuthorizeSecurityGroupEgress", "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:CreateImage", "ec2:CreateSecurityGroup", "ec2:CreateSnapshot",
+        "ec2:CreateImage", "ec2:CreateKeyPair", "ec2:CreateSecurityGroup", "ec2:CreateSnapshot",
         "ec2:CreateTags", "ec2:CreateVolume", "ec2:DeleteSecurityGroup",
-        "ec2:DeleteSnapshot", "ec2:DeleteVolume", "ec2:Describe*",
-        "ec2:DetachVolume", "ec2:DisassociateAddress", "ec2:ModifyInstanceAttribute",
+        "ec2:DeleteKeyPair", "ec2:DeleteSnapshot", "ec2:DeleteVolume", "ec2:Describe*",
+        "ec2:DetachVolume", "ec2:DisassociateAddress", "ec2:DeregisterImage",
+        "ec2:ModifyImageAttribute", "ec2:ModifyInstanceAttribute",
         "ec2:ReleaseAddress", "ec2:RevokeSecurityGroupEgress",
         "ec2:RevokeSecurityGroupIngress", "ec2:RunInstances",
-        "ec2:TerminateInstances"
+        "ec2:StartInstances", "ec2:StopInstances", "ec2:TerminateInstances"
       ],
       "Resource": "*",
       "Condition": {"StringEquals": {"aws:RequestedRegion": "${region}"}}
