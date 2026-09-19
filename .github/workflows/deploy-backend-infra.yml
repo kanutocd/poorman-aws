@@ -263,7 +263,7 @@ jobs:
 
       - name: Upload plan metadata
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.application_name }}-${{ inputs.environment }}-plan-metadata-${{ github.run_id }}
           path: backend-plan-metadata.txt
