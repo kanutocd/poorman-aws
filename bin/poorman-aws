@@ -755,6 +755,18 @@ infer_ssm_session_kms_key_arn() {
   fi
 }
 
+infer_api_url() {
+  local api_hostname
+  [[ -z "${values[frontend.api_url]}" ]] || return 0
+  [[ -n "${values[aws.route53_zone_name]}" ]] || return 0
+  if [[ "${values[defaults.target_environment]}" == production ]]; then
+    api_hostname="api.${values[aws.route53_zone_name]}"
+  else
+    api_hostname="api.${values[defaults.target_environment]}.${values[aws.route53_zone_name]}"
+  fi
+  set_value frontend.api_url "https://${api_hostname}" inferred
+}
+
 require_onboarding_values() {
   local route53_example application_slug
   detect_onboarding_paths
@@ -784,6 +796,7 @@ require_onboarding_values() {
   application_slug="${values[application_name]%-app}"
   route53_example="${application_slug}.com"
   prompt_value aws.route53_zone_name 'Route 53 zone name' true "$route53_example"
+  infer_api_url
   prompt_value aws.state_bucket 'Encrypted remote state bucket' true
   prompt_value backend.ssm_parameters_path 'SSM parameters path'
   prompt_value backend.compose_file 'Consumer Compose file'
@@ -1016,7 +1029,7 @@ jobs:
       environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
       aws_region: __REGION__
       state_bucket: __STATE_BUCKET__
-      api_url: ${{ vars.API_URL }}
+      api_url: ${{ vars.API_URL || '__API_URL__' }}
       compose_file: __COMPOSE__
       caddy_file: __CADDY__
       build_context: __CONTEXT__
@@ -1061,7 +1074,7 @@ jobs:
       aws_region: __REGION__
       state_bucket: __STATE_BUCKET__
       release_id: ${{ inputs.release_id }}
-      api_url: ${{ vars.API_URL }}
+      api_url: ${{ vars.API_URL || '__API_URL__' }}
       compose_file: __COMPOSE__
       caddy_file: __CADDY__
       frontend_url: ${{ vars.FRONTEND_URL }}

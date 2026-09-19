@@ -11,6 +11,11 @@ All notable changes to this project are documented in this file.
   and synchronized as the non-sensitive repository variable
   `SSM_SESSION_KMS_KEY_ARN` so the backend instance role receives the matching
   `kms:Decrypt` permission automatically.
+- Added deterministic API URL inference during onboarding and literal fallbacks
+  in generated backend deploy and rollback callers, preventing required release
+  verification input from being blank when no `API_URL` variable is configured.
+- Improved backend release failure diagnostics by printing the remote SSM
+  activation command's standard output and error content.
 - Added a guarded pre-plan repair for tainted retained EIPs. The reusable
   infrastructure workflow now verifies the live allocation and ownership tags
   before untainting only the matching OpenTofu state entry from the raw state,

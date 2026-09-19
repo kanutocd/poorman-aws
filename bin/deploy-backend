@@ -206,6 +206,17 @@ command_id="$(aws ssm send-command --region "$aws_region" \
   --parameters "file://$command_parameters" \
   --query 'Command.CommandId' --output text)"
 
+print_ssm_failure_output() {
+  local output
+  output="$(aws ssm get-command-invocation --region "$aws_region" \
+    --command-id "$command_id" --instance-id "$instance_id" \
+    --query '[StandardOutputContent,StandardErrorContent]' --output text 2>/dev/null || true)"
+  if [[ -n "$output" && "$output" != $'None\tNone' ]]; then
+    echo 'remote SSM command output:' >&2
+    printf '%s\n' "$output" >&2
+  fi
+}
+
 for attempt in $(seq 1 60); do
   status="$(aws ssm get-command-invocation --region "$aws_region" \
     --command-id "$command_id" --instance-id "$instance_id" \
@@ -216,11 +227,13 @@ for attempt in $(seq 1 60); do
       break
       ;;
     Failed|Cancelled|TimedOut|Cancelling)
+      print_ssm_failure_output
       echo "release activation failed with SSM status: $status" >&2
       exit 1
       ;;
     *)
       if [[ "$attempt" -eq 60 ]]; then
+        print_ssm_failure_output
         echo "release activation did not complete within the timeout" >&2
         exit 1
       fi
