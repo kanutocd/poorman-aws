@@ -141,7 +141,7 @@ build {
   sources = ["source.amazon-ebs.application_backend"]
 
   provisioner "shell" {
-    script = "${path.root}/scripts/bake.sh"
+    script = "${path.root}/scripts/baking.shell"
     environment_vars = [
       "COMPOSE_VERSION=${var.compose_version}",
       "APPLICATION_NAME=${var.application_name}",
