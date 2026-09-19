@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## 0.1.0 - 2026-9-19
+
 - Extended the consumer wrapper's first-run and resume flow with explicit
   consumer-path resolution, persistent POSIX state, profile and region
   discovery, AWS setup-privilege checks, automatic state-bucket bootstrapping,
