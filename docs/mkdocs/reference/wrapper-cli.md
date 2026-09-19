@@ -84,6 +84,7 @@ path and refuses to continue when the answer is empty:
 ```text
 Consumer repository path [/home/example/villago-app]:
 ```
+
 The configuration may contain non-secret commands, paths, identifiers, URLs,
 and sizing values, but it must not contain secret values or credentials.
 
