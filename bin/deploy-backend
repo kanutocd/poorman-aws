@@ -157,7 +157,16 @@ esac
 
 if [[ "$activate_existing" != true ]]; then
   image_name="$application_name:$release_id"
-  docker buildx build --platform linux/arm64 --load --tag "$image_name" --file "$dockerfile" "$build_context"
+  build_arguments=(docker buildx build --platform linux/arm64 --load --tag "$image_name" --file "$dockerfile")
+  if [[ "${DOCKER_BUILD_CACHE:-}" == gha ]]; then
+    cache_scope="${DOCKER_BUILD_CACHE_SCOPE:-${application_name}-${environment}}"
+    build_arguments+=(
+      --cache-from "type=gha,scope=${cache_scope}"
+      --cache-to "type=gha,mode=max,scope=${cache_scope}"
+    )
+  fi
+  build_arguments+=("$build_context")
+  "${build_arguments[@]}"
   docker save "$image_name" | zstd -T0 -19 >"$temporary_directory/image.tar.zst"
   cp "$compose_file" "$temporary_directory/compose.yaml"
   cp "$caddy_file" "$temporary_directory/Caddyfile"

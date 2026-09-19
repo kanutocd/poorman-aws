@@ -1013,7 +1013,7 @@ on:
         type: string
 permissions:
   contents: read
-  actions: read
+  actions: write
   id-token: write
 jobs:
   deploy:

@@ -22,6 +22,9 @@ All notable changes to this project are documented in this file.
 - Added narrowly scoped `ssm:GetParameter`, `ssm:PutParameter`, and
   `ssm:DeleteParameter` permissions for the backend runtime parameter path in
   the GitHub staging and production roles.
+- Enabled GitHub Actions BuildKit layer caching for backend Docker builds,
+  scoped per application and environment, while retaining the local image load
+  required for immutable S3 release publication.
 - Added a guarded pre-plan repair for tainted retained EIPs. The reusable
   infrastructure workflow now verifies the live allocation and ownership tags
   before untainting only the matching OpenTofu state entry from the raw state,

@@ -76,6 +76,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
   id-token: write
 
 concurrency:
@@ -99,6 +100,8 @@ jobs:
       FRONTEND_ORIGIN: ${{ inputs.frontend_origin }}
       INSTANCE_ID: ${{ inputs.instance_id }}
       SUPPLEMENTAL_RELEASE_FILES: ${{ inputs.supplemental_files }}
+      DOCKER_BUILD_CACHE: gha
+      DOCKER_BUILD_CACHE_SCOPE: ${{ inputs.application_name }}-${{ inputs.environment }}
 
     steps:
       - name: Reject floating infrastructure ref in production
