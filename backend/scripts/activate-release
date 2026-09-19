@@ -2,7 +2,14 @@
 set -euo pipefail
 
 release_id="${1:?usage: activate-release RELEASE_ID}"
-application_name="${APPLICATION_NAME:?APPLICATION_NAME is required}"
+
+script_name="$(basename "$0")"
+application_name_from_script="${script_name%-activate-release}"
+[[ "$script_name" == *-activate-release && "$application_name_from_script" =~ ^[a-z][a-z0-9-]{1,32}$ ]] || {
+  echo 'activation script name must be <application>-activate-release' >&2
+  exit 1
+}
+application_name="${APPLICATION_NAME:-$application_name_from_script}"
 environment_file="/etc/${application_name}/environment"
 
 if [[ ! -r "$environment_file" ]]; then

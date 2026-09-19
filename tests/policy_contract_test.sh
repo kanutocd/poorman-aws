@@ -117,6 +117,8 @@ assert_contains 'ec2 terminate-instances' "$project_root/bin/cleanup-packer-reso
 assert_contains 'ec2 delete-key-pair' "$project_root/bin/cleanup-packer-resources"
 assert_contains 'remote SSM command output:' "$project_root/bin/deploy-backend"
 assert_contains 'StandardErrorContent' "$project_root/bin/deploy-backend"
+assert_contains 'application_name_from_script' "$project_root/backend/scripts/activate-release"
+assert_contains 'APPLICATION_NAME:-$application_name_from_script' "$project_root/backend/scripts/activate-release"
 assert_contains '--cache-from "type=gha,scope=${cache_scope}"' "$project_root/bin/deploy-backend"
 assert_contains '--cache-to "type=gha,mode=max,scope=${cache_scope}"' "$project_root/bin/deploy-backend"
 assert_contains 'DOCKER_BUILD_CACHE: gha' "$project_root/.github/workflows/deploy-backend.yml"

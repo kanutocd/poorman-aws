@@ -25,6 +25,9 @@ All notable changes to this project are documented in this file.
 - Enabled GitHub Actions BuildKit layer caching for backend Docker builds,
   scoped per application and environment, while retaining the local image load
   required for immutable S3 release publication.
+- Made backend release activation derive the application name from its installed
+  script name when older host bootstrap state lacks `APPLICATION_NAME`, while
+  retaining the environment-file value when available.
 - Added a guarded pre-plan repair for tainted retained EIPs. The reusable
   infrastructure workflow now verifies the live allocation and ownership tags
   before untainting only the matching OpenTofu state entry from the raw state,
