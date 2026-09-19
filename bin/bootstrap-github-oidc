@@ -262,7 +262,10 @@ write_deployment_policy() {
   local state_prefix="${application_name}/backend/${environment}/"
   local backend_role_arn="arn:aws:iam::${account_id}:role/${application_name}-${environment}-backend-*"
   local backend_profile_arn="arn:aws:iam::${account_id}:instance-profile/${application_name}-${environment}-backend-*"
-  local artifact_bucket_arn="arn:aws:s3:::${application_name}-${environment}-backend-artifacts-*"
+  local artifact_name="${application_name}-${environment}-backend"
+  local artifact_bucket_prefix
+  artifact_bucket_prefix="${artifact_name:0:17}-$(printf '%s' "$artifact_name" | sha1sum | cut -c1-8)-artifacts-"
+  local artifact_bucket_arn="arn:aws:s3:::${artifact_bucket_prefix}*"
 
   cat >"$output_path" <<EOF
 {
@@ -402,7 +405,7 @@ write_deployment_policy() {
     {
       "Sid": "DiscoverHostedZone",
       "Effect": "Allow",
-      "Action": "route53:ListHostedZonesByName",
+      "Action": ["route53:ListHostedZones", "route53:ListHostedZonesByName"],
       "Resource": "*"
     },
     {

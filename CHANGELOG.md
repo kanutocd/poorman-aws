@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Bounded generated deployment-artifact bucket prefixes to AWS's 37-character
+  limit while retaining a readable application prefix and deterministic hash,
+  and aligned the IAM artifact resource pattern with the new names.
+- Added the missing `route53:ListHostedZones` permission required by the
+  backend DNS data source alongside the existing name-based discovery action.
 - Changed AMI metadata persistence to use an application-scoped SSM Parameter
   Store record as the durable AWS-side source, while retaining the canonical
   GitHub artifact and reusable-workflow outputs. Generated callers may

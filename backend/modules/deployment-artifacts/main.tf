@@ -1,3 +1,7 @@
+locals {
+  bucket_prefix = "${substr(var.name, 0, 17)}-${substr(sha1(var.name), 0, 8)}-artifacts-"
+}
+
 resource "terraform_data" "production_destroy_guard" {
   input = var.environment
 
@@ -8,7 +12,7 @@ resource "terraform_data" "production_destroy_guard" {
 
 resource "aws_s3_bucket" "this" {
   bucket        = var.bucket_name
-  bucket_prefix = var.bucket_name == null ? "${var.name}-artifacts-" : null
+  bucket_prefix = var.bucket_name == null ? local.bucket_prefix : null
   force_destroy = var.force_destroy
 
   tags = merge(var.tags, { Name = "${var.name}-artifacts" })
