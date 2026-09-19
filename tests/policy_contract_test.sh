@@ -91,6 +91,8 @@ assert_contains 'substr(var.name, 0, 17)' "$project_root/backend/modules/deploym
 assert_contains 'substr(sha1(var.name), 0, 8)' "$project_root/backend/modules/deployment-artifacts/main.tf"
 assert_contains 'trimspace(var.route53_zone_id) == "" ? null' "$project_root/backend/modules/dns-tls/main.tf"
 assert_contains 'secrets: inherit' "$project_root/.github/workflows/deploy-backend-infra.yml"
+assert_contains 'name: Deploy `poorman-aws` backend release' "$project_root/bin/poorman-aws"
+assert_contains '  id-token: write' "$project_root/bin/poorman-aws"
 assert_contains 'secrets.aws_role_arn || secrets.AWS_ROLE_ARN' "$ami_workflow"
 assert_contains 'aws ec2 describe-images' "$ami_workflow"
 assert_contains 'retry_delays=(2 5 10 15)' "$ami_workflow"

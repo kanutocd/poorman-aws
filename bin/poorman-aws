@@ -1005,6 +1005,7 @@ on:
 permissions:
   contents: read
   actions: read
+  id-token: write
 jobs:
   deploy:
     uses: __REPOSITORY__/.github/workflows/deploy-backend.yml@__REF__

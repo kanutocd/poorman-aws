@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Added `id-token: write` to generated backend deploy callers so reusable
+  deployment workflows can authenticate to AWS through GitHub OIDC.
 - Added automatic Session Manager KMS discovery during onboarding. The key ARN
   is persisted in consumer configuration, rendered as a workflow fallback,
   and synchronized as the non-sensitive repository variable
