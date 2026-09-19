@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Fixed the deployment-role IAM contract for staging and production applies by
+  allowing managed SSM policy attachment, EIP attribute reads, and the
+  untagged-first network resource creation pattern used by OpenTofu.
+
 - Bounded generated deployment-artifact bucket prefixes to AWS's 37-character
   limit while retaining a readable application prefix and deterministic hash,
   and aligned the IAM artifact resource pattern with the new names.

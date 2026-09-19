@@ -294,7 +294,7 @@ write_deployment_policy() {
       "Sid": "DescribeEnvironmentCompute",
       "Effect": "Allow",
       "Action": [
-        "ec2:DescribeAddresses", "ec2:DescribeAvailabilityZones", "ec2:DescribeImages",
+        "ec2:DescribeAddresses", "ec2:DescribeAddressesAttribute", "ec2:DescribeAvailabilityZones", "ec2:DescribeImages",
         "ec2:DescribeInstanceAttribute", "ec2:DescribeInstances", "ec2:DescribeInternetGateways",
         "ec2:DescribeRouteTables", "ec2:DescribeSecurityGroups", "ec2:DescribeSubnets",
         "ec2:DescribeTags", "ec2:DescribeVolumes", "ec2:DescribeVpcAttribute",
@@ -307,8 +307,7 @@ write_deployment_policy() {
       "Sid": "ProvisionEnvironmentCompute",
       "Effect": "Allow",
       "Action": [
-        "ec2:AllocateAddress", "ec2:CreateInternetGateway", "ec2:CreateRouteTable",
-        "ec2:CreateSecurityGroup", "ec2:CreateSubnet",
+        "ec2:AllocateAddress", "ec2:CreateInternetGateway",
         "ec2:CreateVolume", "ec2:CreateVpc", "ec2:CreateVpcEndpoint",
         "ec2:RunInstances"
       ],
@@ -322,6 +321,13 @@ write_deployment_policy() {
           "aws:RequestTag/Component": "backend"
         }
       }
+    },
+    {
+      "Sid": "ProvisionEnvironmentNetwork",
+      "Effect": "Allow",
+      "Action": ["ec2:CreateRouteTable", "ec2:CreateSecurityGroup", "ec2:CreateSubnet"],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "${region}"}}
     },
     {
       "Sid": "OperateEnvironmentCompute",
@@ -378,11 +384,11 @@ write_deployment_policy() {
       "Sid": "ManageEnvironmentIam",
       "Effect": "Allow",
       "Action": [
-        "iam:AddRoleToInstanceProfile", "iam:DeleteInstanceProfile", "iam:DeleteRole",
+        "iam:AddRoleToInstanceProfile", "iam:AttachRolePolicy", "iam:DeleteInstanceProfile", "iam:DeleteRole",
         "iam:DeleteRolePolicy", "iam:GetInstanceProfile", "iam:GetRole",
         "iam:GetRolePolicy", "iam:ListInstanceProfilesForRole",
         "iam:ListAttachedRolePolicies", "iam:ListRolePolicies",
-        "iam:PutRolePolicy",
+        "iam:PutRolePolicy", "iam:DetachRolePolicy",
         "iam:RemoveRoleFromInstanceProfile", "iam:TagInstanceProfile",
         "iam:TagRole", "iam:UntagInstanceProfile", "iam:UntagRole"
       ],
