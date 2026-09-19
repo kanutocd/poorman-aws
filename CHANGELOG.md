@@ -9,6 +9,9 @@ All notable changes to this project are documented in this file.
   and aligned the IAM artifact resource pattern with the new names.
 - Added the missing `route53:ListHostedZones` permission required by the
   backend DNS data source alongside the existing name-based discovery action.
+- Normalized blank Route 53 zone IDs to `null` before DNS data-source
+  selection, preventing generated empty workflow fallbacks from becoming
+  ambiguous hosted-zone lookups.
 - Changed AMI metadata persistence to use an application-scoped SSM Parameter
   Store record as the durable AWS-side source, while retaining the canonical
   GitHub artifact and reusable-workflow outputs. Generated callers may
