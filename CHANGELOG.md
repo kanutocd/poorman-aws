@@ -24,6 +24,12 @@ All notable changes to this project are documented in this file.
 - Added `bin/docs lint` to the main `bin/quality` verification harness and its
   policy contract, making Vale, Markdownlint, and offline Lychee part of the
   required local quality gate.
+- Changed third-party GitHub Actions to use their published major release tags
+  (`actions/checkout@v7`, AWS credentials `@v6`, and the corresponding current
+  major tags for setup, cache, artifact, and Pages actions). The workflow
+  contract now rejects commit-SHA, branch, and local-path action references;
+  the reusable AMI caller is pinned to the published `poorman-aws@v0.1.0`
+  release tag.
 
 - Made the wrapper invocation location-independent. It now resolves the
   consumer Git root, supports an explicit `--consumer-path`, and performs

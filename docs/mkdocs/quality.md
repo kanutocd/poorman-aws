@@ -13,6 +13,11 @@ Compose validation, Packer formatting/validation, Bash syntax checks,
 ShellCheck, repository hygiene checks, and `bin/docs lint`. It never runs a
 real OpenTofu apply, destroy, or cloud-backed integration test.
 
+Workflow action references are required to use published release tags such as
+`actions/checkout@v7`; branch names, local workflow paths, and commit SHAs do
+not satisfy the repository's action-reference contract. Reusable `poorman-aws`
+workflow callers use the published infrastructure release tag as well.
+
 The GitHub Pages workflow runs the same documentation build command used
 locally: `bin/docs build --strict`. It does not need AWS credentials.
 

@@ -137,14 +137,14 @@ jobs:
           exit 1
 
       - name: Check out infrastructure repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.infrastructure_repository }}
           ref: ${{ inputs.infrastructure_ref }}
           path: poorman-aws
 
       - name: Set up OpenTofu
-        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4
+        uses: opentofu/setup-opentofu@v2
 
       - name: Check OpenTofu formatting
         run: tofu fmt -check -recursive poorman-aws/backend
@@ -164,7 +164,7 @@ jobs:
     name: Build or reuse host AMI
     needs: validate
     # use this format to make rhysd/actionlint happy
-    uses: ./.github/workflows/build-backend-ami.yml
+    uses: kanutocd/poorman-aws/.github/workflows/build-backend-ami.yml@v0.1.0
     permissions:
       contents: read
       actions: write
@@ -215,14 +215,14 @@ jobs:
 
     steps:
       - name: Check out infrastructure repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.infrastructure_repository }}
           ref: ${{ inputs.infrastructure_ref }}
           path: poorman-aws
 
       - name: Set up OpenTofu
-        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4
+        uses: opentofu/setup-opentofu@v2
 
       - name: Require resolved AMI ID
         env:
@@ -235,7 +235,7 @@ jobs:
           }
 
       - name: Configure AWS credentials through OIDC
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.aws_role_arn }}
@@ -272,7 +272,7 @@ jobs:
 
       - name: Upload plan metadata
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.application_name }}-${{ inputs.environment }}-plan-metadata-${{ github.run_id }}
           path: backend-plan-metadata.txt

@@ -416,9 +416,9 @@ Use the following policy when publishing and consuming releases:
 - Maintainers may provide a moving major compatibility tag such as `v1` only
   when its update process is documented and protected; an exact release tag
   remains the safer default for infrastructure.
-- Pin third-party actions used inside these workflows to reviewed commit SHAs
-  when the consumer's supply-chain policy requires it. A major action tag is
-  convenient but can move over time.
+- Use the published major release tag for each third-party action used inside
+  these workflows, such as `actions/checkout@v7`. Keep the action reference
+  aligned with the supported release documented by the action publisher.
 - Keep workflow inputs application-neutral and add new optional inputs before
   requiring breaking contract changes. Document every contract change in
   `CHANGELOG.md`.

@@ -42,10 +42,11 @@ workflow checks the canonical artifact and selected environment variables,
 validates the AMI and build fingerprint with AWS, and runs Packer only when no
 matching live AMI exists. The plan receives the resulting `ami_id` directly
 and fails closed if the prerequisite produces no valid ID.
-Because both workflows are owned by `poorman-aws`, the infrastructure workflow
-uses the self-repository reference `$/.github/workflows/build-backend-ami.yml`.
-This keeps the nested call on the same immutable running
-commit and avoids depending on the caller workspace checkout.
+Because both workflows are published by `poorman-aws`, the infrastructure
+workflow uses the release reference
+`kanutocd/poorman-aws/.github/workflows/build-backend-ami.yml@v0.1.0`.
+Consumers should update this release tag deliberately with the rest of their
+generated integration files.
 
 Optional infrastructure inputs include `instance_type` (`t4g.micro`),
 `root_volume_size_gib` (`10`), `data_volume_size_gib` (`20`), `retain_eip`

@@ -45,7 +45,7 @@ jobs:
           exit 1
 
       - name: Check out poorman-aws
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.source_repository }}
           ref: ${{ inputs.source_ref }}
