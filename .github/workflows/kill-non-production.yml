@@ -108,12 +108,10 @@ on:
       aws_role_arn:
         description: "IAM role allowed to manage the environment"
         required: true
-      ami_id:
-        description: "Reviewed AMI ID used by the OpenTofu state"
-        required: false
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -138,7 +136,6 @@ jobs:
       TF_VAR_aws_region: ${{ inputs.aws_region }}
       TF_VAR_environment: ${{ inputs.environment }}
       TF_VAR_availability_zone: ${{ inputs.availability_zone }}
-      TF_VAR_ami_id: ${{ secrets.ami_id }}
       TF_VAR_instance_type: ${{ inputs.instance_type }}
       TF_VAR_root_volume_size_gib: ${{ inputs.root_volume_size_gib }}
       TF_VAR_data_volume_size_gib: ${{ inputs.data_volume_size_gib }}
@@ -170,6 +167,18 @@ jobs:
       - name: Set up OpenTofu
         if: inputs.action != 'STOP'
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4
+
+      - name: Resolve AMI ID from artifact or environment variable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ami_id="$(bash poorman-aws/bin/resolve-ami-id \
+            --repo "${GITHUB_REPOSITORY}" \
+            --application-name "${APPLICATION_NAME}" \
+            --environment "${{ inputs.environment }}" \
+            --fallback "${{ vars.AMI_ID }}")"
+          printf 'TF_VAR_ami_id=%s\n' "$ami_id" >> "$GITHUB_ENV"
 
       - name: Configure AWS credentials through OIDC
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd

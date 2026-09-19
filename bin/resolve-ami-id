@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: resolve-ami-id --repo OWNER/REPOSITORY --application-name NAME \
+  --environment ENVIRONMENT [--fallback AMI_ID]
+
+Resolve the newest non-expired AMI artifact, falling back to the selected
+GitHub environment's AMI_ID variable.
+USAGE
+}
+
+die() { printf 'error: %s\n' "$1" >&2; exit 2; }
+
+repo=''
+application_name=''
+environment=''
+fallback=''
+while (($# > 0)); do
+  case "$1" in
+    --repo) (($# >= 2)) || die '--repo requires OWNER/REPOSITORY'; repo="$2"; shift 2 ;;
+    --application-name) (($# >= 2)) || die '--application-name requires a value'; application_name="$2"; shift 2 ;;
+    --environment) (($# >= 2)) || die '--environment requires a value'; environment="$2"; shift 2 ;;
+    --fallback) (($# >= 2)) || die '--fallback requires an AMI ID'; fallback="$2"; shift 2 ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+
+[[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || die '--repo must be OWNER/REPOSITORY'
+[[ "$application_name" =~ ^[a-z][a-z0-9-]{1,32}$ ]] || die '--application-name is invalid'
+[[ "$environment" =~ ^[a-z][a-z0-9-]{1,31}$ ]] || die '--environment is invalid'
+command -v gh >/dev/null 2>&1 || die 'gh is required to resolve the AMI artifact'
+command -v jq >/dev/null 2>&1 || die 'jq is required to resolve the AMI artifact'
+command -v curl >/dev/null 2>&1 || die 'curl is required to download the AMI artifact'
+command -v unzip >/dev/null 2>&1 || die 'unzip is required to read the AMI artifact'
+
+artifact_name="poorman-aws-${application_name}-ami"
+artifact_id="$(gh api "repos/${repo}/actions/artifacts?name=${artifact_name}&per_page=100" \
+  --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .id // empty')"
+ami_id=''
+if [[ -n "$artifact_id" ]]; then
+  archive_url="$(gh api "repos/${repo}/actions/artifacts/${artifact_id}" --jq '.archive_download_url')"
+  archive_path="$(mktemp "${RUNNER_TEMP:-/tmp}/ami-artifact.XXXXXX.zip")"
+  cleanup() { rm -f "$archive_path"; }
+  trap cleanup EXIT
+  curl -fsSL \
+    -H "Authorization: Bearer ${GH_TOKEN:?GH_TOKEN is required}" \
+    -H 'Accept: application/vnd.github+json' \
+    "$archive_url" -o "$archive_path"
+  ami_id="$(unzip -p "$archive_path" ami-id.txt 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ -n "$ami_id" ]]; then
+    echo 'resolved AMI_ID from the latest non-expired workflow artifact' >&2
+  fi
+fi
+
+if [[ -z "$ami_id" ]]; then
+  ami_id="$fallback"
+  [[ -n "$ami_id" ]] && echo "resolved AMI_ID from the ${environment} GitHub environment variable" >&2
+fi
+
+[[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] ||
+  die "no valid AMI_ID found in artifact ${artifact_name} or the ${environment} environment variable"
+printf '%s\n' "$ami_id"

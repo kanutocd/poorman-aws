@@ -70,6 +70,12 @@ variable "ami_name_prefix" {
   }
 }
 
+variable "build_fingerprint" {
+  description = "Fingerprint of the reviewed AMI build inputs and template."
+  type        = string
+  default     = "manual"
+}
+
 variable "compose_version" {
   description = "Pinned Docker Compose plugin release installed in the AMI."
   type        = string
@@ -115,10 +121,11 @@ source "amazon-ebs" "application_backend" {
   }
 
   tags = {
-    Application  = var.application_name
-    Component    = "backend-host-base"
-    ManagedBy    = "packer"
-    Architecture = "arm64"
+    Application      = var.application_name
+    Component        = "backend-host-base"
+    ManagedBy        = "packer"
+    Architecture     = "arm64"
+    BuildFingerprint = var.build_fingerprint
   }
 }
 
@@ -138,11 +145,12 @@ build {
     output     = "manifest.json"
     strip_path = true
     custom_data = {
-      application     = var.application_name
-      component       = "backend-host-base"
-      architecture    = "arm64"
-      compose_version = var.compose_version
-      source_ami      = "${build.SourceAMI}"
+      application       = var.application_name
+      component         = "backend-host-base"
+      architecture      = "arm64"
+      compose_version   = var.compose_version
+      source_ami        = "${build.SourceAMI}"
+      build_fingerprint = var.build_fingerprint
     }
   }
 }

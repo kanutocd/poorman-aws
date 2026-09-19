@@ -96,16 +96,29 @@ on:
         required: false
         default: '{}'
         type: string
+      ami_subnet_id:
+        description: "Public subnet for the idempotent AMI build or reuse check"
+        required: true
+        type: string
+      ami_ssh_cidr:
+        description: "Temporary AMI builder SSH CIDR"
+        required: true
+        type: string
+      ami_name_prefix:
+        description: "AMI name prefix"
+        required: true
+        type: string
     secrets:
       aws_role_arn:
         description: "IAM role allowed to manage this environment"
         required: true
-      ami_id:
-        description: "Reviewed AMI ID for the application host"
+      ami_build_role_arn:
+        description: "Dedicated IAM role allowed to build or reuse the host AMI"
         required: true
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: ${{ inputs.application_name }}-infrastructure-${{ inputs.environment }}
@@ -147,13 +160,37 @@ jobs:
       - name: Check host scripts
         run: bash -n poorman-aws/backend/scripts/* poorman-aws/bin/kill-non-production
 
+  build_or_resolve_ami:
+    name: Build or reuse host AMI
+    needs: validate
+    # actionlint 1.7.12 does not yet recognize GitHub's self-repository
+    # reusable-workflow reference; GitHub accepts this syntax.
+    # actionlint-ignore workflow-call
+    uses: $/.github/workflows/build-backend-ami.yml
+    permissions:
+      contents: read
+      actions: write
+      id-token: write
+    with:
+      infrastructure_repository: ${{ inputs.infrastructure_repository }}
+      infrastructure_ref: ${{ inputs.infrastructure_ref }}
+      application_name: ${{ inputs.application_name }}
+      aws_region: ${{ inputs.aws_region }}
+      subnet_id: ${{ inputs.ami_subnet_id }}
+      ssh_cidr: ${{ inputs.ami_ssh_cidr }}
+      ami_name_prefix: ${{ inputs.ami_name_prefix }}
+      target_environment: ${{ inputs.environment }}
+    secrets:
+      aws_role_arn: ${{ secrets.ami_build_role_arn }}
+
   plan:
     name: Plan ${{ inputs.environment }}
-    needs: validate
+    needs: [validate, build_or_resolve_ami]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
+      actions: read
       id-token: write
 
     env:
@@ -163,7 +200,6 @@ jobs:
       TF_VAR_aws_region: ${{ inputs.aws_region }}
       TF_VAR_environment: ${{ inputs.environment }}
       TF_VAR_availability_zone: ${{ inputs.availability_zone }}
-      TF_VAR_ami_id: ${{ secrets.ami_id }}
       TF_VAR_instance_type: ${{ inputs.instance_type }}
       TF_VAR_root_volume_size_gib: ${{ inputs.root_volume_size_gib }}
       TF_VAR_data_volume_size_gib: ${{ inputs.data_volume_size_gib }}
@@ -177,6 +213,7 @@ jobs:
       TF_VAR_route53_zone_name: ${{ inputs.route53_zone_name }}
       TF_VAR_route53_zone_id: ${{ inputs.route53_zone_id }}
       TF_VAR_tags: ${{ inputs.tags_json }}
+      TF_VAR_ami_id: ${{ needs.build_or_resolve_ami.outputs.ami_id }}
 
     steps:
       - name: Check out infrastructure repository
@@ -188,6 +225,16 @@ jobs:
 
       - name: Set up OpenTofu
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4
+
+      - name: Require resolved AMI ID
+        env:
+          AMI_ID: ${{ needs.build_or_resolve_ami.outputs.ami_id }}
+        run: |
+          set -euo pipefail
+          [[ "$AMI_ID" =~ ^ami-[0-9a-f]+$ ]] || {
+            echo 'build_or_resolve_ami did not return a valid AMI ID' >&2
+            exit 1
+          }
 
       - name: Configure AWS credentials through OIDC
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd

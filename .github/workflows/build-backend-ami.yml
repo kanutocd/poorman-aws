@@ -2,6 +2,13 @@ name: Build application host AMI
 
 on:
   workflow_call:
+    outputs:
+      ami_id:
+        description: AMI ID reused or built by this workflow
+        value: ${{ jobs.publish.outputs.ami_id }}
+      build_fingerprint:
+        description: Fingerprint of the reviewed AMI build inputs
+        value: ${{ jobs.publish.outputs.build_fingerprint }}
     inputs:
       infrastructure_repository:
         description: "Repository containing the reusable infrastructure"
@@ -31,6 +38,11 @@ on:
         description: "Immutable AMI name prefix"
         required: true
         type: string
+      target_environment:
+        description: "Consumer environment that receives AMI_ID"
+        required: false
+        default: staging
+        type: string
     secrets:
       aws_role_arn:
         description: "IAM role allowed to build the AMI"
@@ -38,6 +50,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
   id-token: write
 
 concurrency:
@@ -45,10 +58,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build ARM64 application host AMI
+  guard:
+    name: Guard and resolve host AMI
     runs-on: ubuntu-latest
     environment: ami-build
+    outputs:
+      ami_id: ${{ steps.ami_guard.outputs.ami_id }}
+      reuse: ${{ steps.ami_guard.outputs.reuse }}
+      build_fingerprint: ${{ steps.fingerprint.outputs.build_fingerprint }}
 
     env:
       APPLICATION_NAME: ${{ inputs.application_name }}
@@ -56,6 +73,7 @@ jobs:
       PACKER_SUBNET_ID: ${{ inputs.subnet_id }}
       PACKER_SSH_CIDR: ${{ inputs.ssh_cidr }}
       PACKER_AMI_NAME_PREFIX: ${{ inputs.ami_name_prefix }}
+      TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
 
     steps:
       - name: Check out infrastructure repository
@@ -65,8 +83,23 @@ jobs:
           ref: ${{ inputs.infrastructure_ref }}
           path: poorman-aws
 
-      - name: Set up Packer
-        uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789
+      - name: Compute AMI build fingerprint
+        id: fingerprint
+        working-directory: poorman-aws/backend/packer
+        run: |
+          set -euo pipefail
+          fingerprint_input="$(
+            printf 'application_name=%s\n' "$APPLICATION_NAME"
+            printf 'aws_region=%s\n' "$AWS_REGION"
+            printf 'subnet_id=%s\n' "$PACKER_SUBNET_ID"
+            printf 'ssh_cidr=%s\n' "$PACKER_SSH_CIDR"
+            printf 'ami_name_prefix=%s\n' "$PACKER_AMI_NAME_PREFIX"
+            sha256sum ./*.hcl scripts/*
+          )"
+          build_fingerprint="$(printf '%s\n' "$fingerprint_input" | sha256sum | cut -d' ' -f1)"
+          printf 'BUILD_FINGERPRINT=%s\n' "$build_fingerprint" >> "$GITHUB_ENV"
+          printf 'build_fingerprint=%s\n' "$build_fingerprint" >> "$GITHUB_OUTPUT"
+          echo "AMI build fingerprint: $build_fingerprint"
 
       - name: Configure AWS credentials through OIDC
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
@@ -74,6 +107,127 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.aws_role_arn }}
           role-session-name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}
+
+      - name: Reuse a matching live AMI when available
+        id: ami_guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016
+          artifact_name="poorman-aws-${APPLICATION_NAME}-ami"
+          candidate=''
+          candidate_fingerprint=''
+          source=''
+          retry_delays=(2 5 10 15)
+
+          read_environment_variable() {
+            local variable_name="$1" attempt value=''
+            for attempt in "${!retry_delays[@]}"; do
+              if value="$(gh api "repos/${GITHUB_REPOSITORY}/environments/${TARGET_ENVIRONMENT}/variables/${variable_name}" \
+                --jq '.value // empty' 2>/dev/null)"; then
+                printf '%s\n' "$value"
+                return 0
+              fi
+              [[ "$attempt" -eq $((${#retry_delays[@]} - 1)) ]] || sleep "${retry_delays[$attempt]}"
+            done
+            printf '%s\n' ''
+          }
+
+          reuse_candidate() {
+            local image_metadata image_state image_fingerprint attempt
+            [[ "$candidate" =~ ^ami-[0-9a-f]+$ && "$candidate_fingerprint" == "$BUILD_FINGERPRINT" ]] || return 1
+            for attempt in "${!retry_delays[@]}"; do
+              # shellcheck disable=SC2016
+              if image_metadata="$(aws ec2 describe-images --region "$AWS_REGION" --image-ids "$candidate" \
+                --query 'Images[0].[State,Tags[?Key==`BuildFingerprint`].Value | [0]]' \
+                --output text 2>/dev/null)"; then
+                image_state="${image_metadata%%$'\t'*}"
+                image_fingerprint="${image_metadata#*$'\t'}"
+                if [[ "$image_state" == available && "$image_fingerprint" == "$BUILD_FINGERPRINT" ]]; then
+                  echo "Reusing live AMI $candidate from $source (fingerprint $BUILD_FINGERPRINT)."
+                  printf 'ami_id=%s\n' "$candidate" >> "$GITHUB_OUTPUT"
+                  printf 'reuse=true\n' >> "$GITHUB_OUTPUT"
+                  return 0
+                fi
+                if [[ "$image_state" != pending ]]; then
+                  echo "Ignoring stale, untagged, or mismatched AMI $candidate from $source (state: ${image_state:-not found}, fingerprint: ${image_fingerprint:-missing})."
+                  return 1
+                fi
+                echo "AMI $candidate is still pending; retrying validation."
+              else
+                echo "AMI validation request failed for $candidate; retrying."
+              fi
+              [[ "$attempt" -eq $((${#retry_delays[@]} - 1)) ]] || sleep "${retry_delays[$attempt]}"
+            done
+            echo "AMI $candidate was not confirmed available after retries; it will not be reused."
+            return 1
+          }
+
+          artifact_id=''
+          for attempt in "${!retry_delays[@]}"; do
+            if artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
+              --jq '[.artifacts[] | select(.expired == false) | select(.workflow_run.head_repository.full_name == env.GITHUB_REPOSITORY)] | sort_by(.created_at) | last | .id // empty' 2>/dev/null)"; then
+              break
+            fi
+            [[ "$attempt" -eq $((${#retry_delays[@]} - 1)) ]] || sleep "${retry_delays[$attempt]}"
+          done
+          if [[ -n "$artifact_id" ]]; then
+            archive_url="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}" --jq '.archive_download_url')"
+            archive_path="$(mktemp "${RUNNER_TEMP:-/tmp}/ami-guard.XXXXXX.zip")"
+            trap 'rm -f "$archive_path"' EXIT
+            curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' --retry 4 --retry-delay 2 \
+              --retry-all-errors "$archive_url" -o "$archive_path" || true
+            candidate="$(unzip -p "$archive_path" ami-id.txt 2>/dev/null | tr -d '[:space:]' || true)"
+            candidate_fingerprint="$(unzip -p "$archive_path" build-fingerprint.txt 2>/dev/null | tr -d '[:space:]' || true)"
+            source='canonical artifact'
+          fi
+
+          if reuse_candidate; then exit 0; fi
+
+          candidate="$(read_environment_variable AMI_ID)"
+          candidate_fingerprint="$(read_environment_variable AMI_BUILD_FINGERPRINT)"
+          source="${TARGET_ENVIRONMENT} environment variables"
+          if reuse_candidate; then exit 0; fi
+
+          echo 'No matching live AMI found; Packer will build a new image.'
+          printf 'reuse=false\n' >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ARM64 application host AMI
+    needs: guard
+    if: needs.guard.outputs.reuse != 'true'
+    runs-on: ubuntu-latest
+    environment: ami-build
+    outputs:
+      ami_id: ${{ steps.ami.outputs.ami_id }}
+
+    env:
+      APPLICATION_NAME: ${{ inputs.application_name }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      PACKER_SUBNET_ID: ${{ inputs.subnet_id }}
+      PACKER_SSH_CIDR: ${{ inputs.ssh_cidr }}
+      PACKER_AMI_NAME_PREFIX: ${{ inputs.ami_name_prefix }}
+      BUILD_FINGERPRINT: ${{ needs.guard.outputs.build_fingerprint }}
+
+    steps:
+      - name: Check out infrastructure repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ inputs.infrastructure_repository }}
+          ref: ${{ inputs.infrastructure_ref }}
+          path: poorman-aws
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}-build
+
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789
 
       - name: Initialize Packer plugins
         working-directory: poorman-aws/backend/packer
@@ -92,6 +246,7 @@ jobs:
           -var "subnet_id=${PACKER_SUBNET_ID}"
           -var "ssh_cidr=${PACKER_SSH_CIDR}"
           -var "ami_name_prefix=${PACKER_AMI_NAME_PREFIX}"
+          -var "build_fingerprint=${BUILD_FINGERPRINT}"
 
       - name: Build AMI
         working-directory: poorman-aws/backend/packer
@@ -102,15 +257,71 @@ jobs:
           -var "subnet_id=${PACKER_SUBNET_ID}"
           -var "ssh_cidr=${PACKER_SSH_CIDR}"
           -var "ami_name_prefix=${PACKER_AMI_NAME_PREFIX}"
+          -var "build_fingerprint=${BUILD_FINGERPRINT}"
 
       - name: Extract AMI metadata
+        id: ami
         working-directory: poorman-aws/backend/packer
         run: |
           jq '{builds: [.builds[] | {name, artifact_id, builder_type}], custom_data}' manifest.json > manifest.redacted.json
+          ami_id="$(jq -r '[.builds[].artifact_id | capture("(?<ami>ami-[0-9a-f]+)").ami] | first // empty' manifest.json)"
+          [[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] || { echo 'Packer manifest did not contain a valid AMI ID' >&2; exit 1; }
+          printf '%s\n' "$ami_id" > ami-id.txt
+          printf '%s\n' "$BUILD_FINGERPRINT" > build-fingerprint.txt
+          printf 'ami_id=%s\n' "$ami_id" >> "$GITHUB_OUTPUT"
 
-      - name: Upload AMI manifest
+  publish:
+    name: Publish AMI_ID to ${{ inputs.target_environment }}
+    needs: [guard, build]
+    if: >-
+      always() && needs.guard.result == 'success' &&
+      (needs.guard.outputs.reuse == 'true' || needs.build.result == 'success')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    outputs:
+      ami_id: ${{ steps.metadata.outputs.ami_id }}
+      build_fingerprint: ${{ steps.metadata.outputs.build_fingerprint }}
+    permissions:
+      actions: write
+    steps:
+      - name: Prepare canonical AMI metadata
+        id: metadata
+        env:
+          REUSED_AMI_ID: ${{ needs.guard.outputs.ami_id }}
+          BUILT_AMI_ID: ${{ needs.build.outputs.ami_id }}
+          BUILD_FINGERPRINT: ${{ needs.guard.outputs.build_fingerprint }}
+        run: |
+          set -euo pipefail
+          ami_id="${REUSED_AMI_ID:-$BUILT_AMI_ID}"
+          [[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] || { echo 'No valid AMI ID was produced by the guard or build job' >&2; exit 1; }
+          printf 'ami_id=%s\n' "$ami_id" >> "$GITHUB_OUTPUT"
+          printf 'build_fingerprint=%s\n' "$BUILD_FINGERPRINT" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$ami_id" > ami-id.txt
+          printf '%s\n' "$BUILD_FINGERPRINT" > build-fingerprint.txt
+          jq -n \
+            --arg ami_id "$ami_id" \
+            --arg fingerprint "$BUILD_FINGERPRINT" \
+            '{builds: [], custom_data: {selected_ami_id: $ami_id, build_fingerprint: $fingerprint}}' \
+            > manifest.redacted.json
+
+      - name: Upload canonical AMI artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}
-          path: poorman-aws/backend/packer/manifest.redacted.json
+          name: poorman-aws-${{ inputs.application_name }}-ami
+          path: |
+            ami-id.txt
+            build-fingerprint.txt
+            manifest.redacted.json
           if-no-files-found: error
+
+      - name: Publish AMI_ID to the target environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AMI_ID: ${{ steps.metadata.outputs.ami_id }}
+          AMI_BUILD_FINGERPRINT: ${{ steps.metadata.outputs.build_fingerprint }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$AMI_ID" |
+            gh variable set AMI_ID --env "${{ inputs.target_environment }}" --repo "${GITHUB_REPOSITORY}"
+          printf '%s' "$AMI_BUILD_FINGERPRINT" |
+            gh variable set AMI_BUILD_FINGERPRINT --env "${{ inputs.target_environment }}" --repo "${GITHUB_REPOSITORY}"
