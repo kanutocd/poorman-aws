@@ -4,10 +4,10 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage: resolve-ami-id --repo OWNER/REPOSITORY --application-name NAME \
-  --environment ENVIRONMENT [--fallback AMI_ID]
+  --environment ENVIRONMENT --aws-region REGION [--fallback AMI_ID]
 
-Resolve the newest non-expired AMI artifact, falling back to the selected
-GitHub environment's AMI_ID variable.
+Resolve the newest non-expired AMI artifact, the application-scoped SSM
+Parameter Store record, or the selected GitHub environment's AMI_ID variable.
 USAGE
 }
 
@@ -16,12 +16,14 @@ die() { printf 'error: %s\n' "$1" >&2; exit 2; }
 repo=''
 application_name=''
 environment=''
+aws_region=''
 fallback=''
 while (($# > 0)); do
   case "$1" in
     --repo) (($# >= 2)) || die '--repo requires OWNER/REPOSITORY'; repo="$2"; shift 2 ;;
     --application-name) (($# >= 2)) || die '--application-name requires a value'; application_name="$2"; shift 2 ;;
     --environment) (($# >= 2)) || die '--environment requires a value'; environment="$2"; shift 2 ;;
+    --aws-region) (($# >= 2)) || die '--aws-region requires a value'; aws_region="$2"; shift 2 ;;
     --fallback) (($# >= 2)) || die '--fallback requires an AMI ID'; fallback="$2"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -31,10 +33,12 @@ done
 [[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || die '--repo must be OWNER/REPOSITORY'
 [[ "$application_name" =~ ^[a-z][a-z0-9-]{1,32}$ ]] || die '--application-name is invalid'
 [[ "$environment" =~ ^[a-z][a-z0-9-]{1,31}$ ]] || die '--environment is invalid'
+[[ "$aws_region" =~ ^[a-z0-9-]+$ ]] || die '--aws-region is invalid'
 command -v gh >/dev/null 2>&1 || die 'gh is required to resolve the AMI artifact'
 command -v jq >/dev/null 2>&1 || die 'jq is required to resolve the AMI artifact'
 command -v curl >/dev/null 2>&1 || die 'curl is required to download the AMI artifact'
 command -v unzip >/dev/null 2>&1 || die 'unzip is required to read the AMI artifact'
+command -v aws >/dev/null 2>&1 || die 'aws is required to read the AMI SSM parameter'
 
 artifact_name="poorman-aws-${application_name}-ami"
 artifact_id="$(gh api "repos/${repo}/actions/artifacts?name=${artifact_name}&per_page=100" \
@@ -56,10 +60,18 @@ if [[ -n "$artifact_id" ]]; then
 fi
 
 if [[ -z "$ami_id" ]]; then
+  ssm_parameter_name="/poorman-aws/${application_name}/ami/${aws_region}/${environment}"
+  if ssm_value="$(aws ssm get-parameter --region "$aws_region" --name "$ssm_parameter_name" --query 'Parameter.Value' --output text 2>/dev/null)"; then
+    ami_id="$(jq -r '.ami_id // empty' <<<"$ssm_value" 2>/dev/null || true)"
+    [[ -n "$ami_id" ]] && echo "resolved AMI_ID from SSM Parameter Store: $ssm_parameter_name" >&2
+  fi
+fi
+
+if [[ -z "$ami_id" ]]; then
   ami_id="$fallback"
   [[ -n "$ami_id" ]] && echo "resolved AMI_ID from the ${environment} GitHub environment variable" >&2
 fi
 
 [[ "$ami_id" =~ ^ami-[0-9a-f]+$ ]] ||
-  die "no valid AMI_ID found in artifact ${artifact_name} or the ${environment} environment variable"
+  die "no valid AMI_ID found in artifact ${artifact_name}, SSM Parameter Store, or the ${environment} environment variable"
 printf '%s\n' "$ami_id"

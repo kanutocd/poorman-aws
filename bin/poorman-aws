@@ -953,7 +953,6 @@ jobs:
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
       ami_build_role_arn: ${{ secrets.AWS_AMI_ROLE_ARN }}
-      environment_admin_token: ${{ secrets.POORMAN_ENVIRONMENT_ADMIN_TOKEN }}
 EOF
 )"
   deploy="$(cat <<'EOF'
@@ -1091,7 +1090,31 @@ jobs:
       target_environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN }}
-      environment_admin_token: ${{ secrets.POORMAN_ENVIRONMENT_ADMIN_TOKEN }}
+  persist_environment_backup:
+    name: Mirror AMI metadata to the consumer environment
+    needs: ami
+    if: needs.ami.result == 'success'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.POORMAN_ENVIRONMENT_ADMIN_TOKEN }}
+      AMI_ID: ${{ needs.ami.outputs.ami_id }}
+      AMI_BUILD_FINGERPRINT: ${{ needs.ami.outputs.build_fingerprint }}
+    steps:
+      - name: Mirror AMI metadata when an admin token is configured
+        if: env.GH_TOKEN != ''
+        run: |
+          set -euo pipefail
+          printf '%s' "$AMI_ID" |
+            gh variable set AMI_ID --env "${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}" --repo "${GITHUB_REPOSITORY}"
+          printf '%s' "$AMI_BUILD_FINGERPRINT" |
+            gh variable set AMI_BUILD_FINGERPRINT --env "${{ inputs.environment || '__TARGET_ENVIRONMENT__' }}" --repo "${GITHUB_REPOSITORY}"
+
+      - name: Explain skipped environment backup
+        if: env.GH_TOKEN == ''
+        run: echo 'POORMAN_ENVIRONMENT_ADMIN_TOKEN is not configured; SSM and artifact persistence remain authoritative.'
 EOF
 )"
   lifecycle="$(cat <<'EOF'

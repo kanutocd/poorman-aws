@@ -168,7 +168,14 @@ jobs:
         if: inputs.action != 'STOP'
         uses: opentofu/setup-opentofu@v2
 
-      - name: Resolve AMI ID from artifact or environment variable
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-lifecycle-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Resolve AMI ID from artifact, SSM, or environment variable
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -177,15 +184,9 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --application-name "${APPLICATION_NAME}" \
             --environment "${{ inputs.environment }}" \
+            --aws-region "${AWS_REGION}" \
             --fallback "${{ vars.AMI_ID }}")"
           printf 'TF_VAR_ami_id=%s\n' "$ami_id" >> "$GITHUB_ENV"
-
-      - name: Configure AWS credentials through OIDC
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ secrets.aws_role_arn }}
-          role-session-name: ${{ inputs.application_name }}-lifecycle-${{ inputs.environment }}-${{ github.run_id }}
 
       - name: Execute non-production action
         run: |

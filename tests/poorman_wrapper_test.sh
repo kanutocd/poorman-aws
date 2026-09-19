@@ -183,7 +183,7 @@ touch "$temporary_dir/onboard/backend/Dockerfile"
   grep -Fq 'default: subnet-0123456789abcdef0' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'name: Build `poorman-aws` backend AMI' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq '  id-token: write' .github/workflows/poorman-aws-backend-ami.yml
-  grep -Fq 'environment_admin_token: ${{ secrets.POORMAN_ENVIRONMENT_ADMIN_TOKEN }}' .github/workflows/poorman-aws-backend-ami.yml
+  grep -Fq 'persist_environment_backup:' .github/workflows/poorman-aws-backend-ami.yml
   ! grep -Fq 'ssh_cidr:' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'default: onboard-app-backend' .github/workflows/poorman-aws-backend-ami.yml
   grep -Fq 'default: staging' .github/workflows/poorman-aws-backend-ami.yml

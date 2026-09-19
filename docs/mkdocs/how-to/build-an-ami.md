@@ -27,9 +27,10 @@ and the workflow's build job. Its `EXIT` trap invokes the shared cleanup script
 on success, failure, and normal interruption; the workflow also performs a
 tag-based cleanup pass and Packer uses `-on-error=cleanup`. The
 reusable AMI workflow is idempotency-guarded. Before starting Packer, it
-checks the canonical AMI artifact and the selected environment's `AMI_ID` and
-`AMI_BUILD_FINGERPRINT` variables. It reuses a candidate only when the AWS AMI
-is still `available` and carries the requested build fingerprint. Stale,
+checks the canonical AMI artifact, the application-scoped SSM Parameter Store
+record, and the selected environment's `AMI_ID` and `AMI_BUILD_FINGERPRINT`
+variables, in that order. It reuses a candidate only when the AWS AMI is still
+`available` and carries the requested build fingerprint. Stale,
 missing, untagged, or mismatched candidates cause a new build; repeated
 mistaken triggers with the same inputs do not create another AMI.
 Discovery and validation use bounded retries with backoff for transient GitHub,

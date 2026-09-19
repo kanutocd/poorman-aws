@@ -609,6 +609,7 @@ EOF
 
 write_ami_policy() {
   local output_path="$1"
+  local ami_parameter_arn="arn:aws:ssm:${region}:${account_id}:parameter/poorman-aws/${application_name}/ami/*"
 
   cat >"$output_path" <<EOF
 {
@@ -637,6 +638,12 @@ write_ami_policy() {
       "Effect": "Allow",
       "Action": "sts:GetCallerIdentity",
       "Resource": "*"
+    },
+    {
+      "Sid": "PersistAmiMetadata",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:PutParameter"],
+      "Resource": "${ami_parameter_arn}"
     }
   ]
 }

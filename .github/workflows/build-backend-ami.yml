@@ -48,9 +48,6 @@ on:
       aws_role_arn:
         description: "IAM role allowed to build the AMI"
         required: true
-      environment_admin_token:
-        description: "Token allowed to publish AMI variables to the consumer environment"
-        required: true
 
 permissions:
   contents: read
@@ -77,6 +74,7 @@ jobs:
       PACKER_SUBNET_ID: ${{ inputs.subnet_id }}
       PACKER_AMI_NAME_PREFIX: ${{ inputs.ami_name_prefix }}
       TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+      AMI_PARAMETER_NAME: /poorman-aws/${{ inputs.application_name }}/ami/${{ inputs.aws_region }}/${{ inputs.target_environment }}
 
     steps:
       - name: Check out infrastructure repository
@@ -188,6 +186,16 @@ jobs:
 
           if reuse_candidate; then exit 0; fi
 
+          candidate=''
+          candidate_fingerprint=''
+          if parameter_value="$(aws ssm get-parameter --region "$AWS_REGION" --name "$AMI_PARAMETER_NAME" --query 'Parameter.Value' --output text 2>/dev/null)"; then
+            candidate="$(jq -r '.ami_id // empty' <<<"$parameter_value" 2>/dev/null || true)"
+            candidate_fingerprint="$(jq -r '.build_fingerprint // empty' <<<"$parameter_value" 2>/dev/null || true)"
+            source='SSM Parameter Store'
+            if reuse_candidate; then exit 0; fi
+            echo "Ignoring malformed or stale AMI metadata in $AMI_PARAMETER_NAME."
+          fi
+
           candidate="$(read_environment_variable AMI_ID)"
           candidate_fingerprint="$(read_environment_variable AMI_BUILD_FINGERPRINT)"
           source="${TARGET_ENVIRONMENT} environment variables"
@@ -295,12 +303,13 @@ jobs:
       needs.cleanup.result == 'success' &&
       (needs.guard.outputs.reuse == 'true' || needs.build.result == 'success')
     runs-on: ubuntu-latest
-    environment: ${{ inputs.target_environment }}
+    environment: ami-build
     outputs:
       ami_id: ${{ steps.metadata.outputs.ami_id }}
       build_fingerprint: ${{ steps.metadata.outputs.build_fingerprint }}
     permissions:
       actions: write
+      id-token: write
     steps:
       - name: Prepare canonical AMI metadata
         id: metadata
@@ -322,6 +331,33 @@ jobs:
             '{builds: [], custom_data: {selected_ami_id: $ami_id, build_fingerprint: $fingerprint}}' \
             > manifest.redacted.json
 
+      - name: Configure AWS credentials for AMI metadata persistence
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          role-session-name: ${{ inputs.application_name }}-host-ami-${{ github.run_id }}-publish
+
+      - name: Persist AMI metadata in SSM Parameter Store
+        env:
+          AMI_ID: ${{ steps.metadata.outputs.ami_id }}
+          BUILD_FINGERPRINT: ${{ steps.metadata.outputs.build_fingerprint }}
+          AMI_PARAMETER_NAME: /poorman-aws/${{ inputs.application_name }}/ami/${{ inputs.aws_region }}/${{ inputs.target_environment }}
+        run: |
+          set -euo pipefail
+          parameter_value="$(jq -cn \
+            --arg ami_id "$AMI_ID" \
+            --arg build_fingerprint "$BUILD_FINGERPRINT" \
+            '{ami_id: $ami_id, build_fingerprint: $build_fingerprint}')"
+          aws ssm put-parameter \
+            --region "${{ inputs.aws_region }}" \
+            --name "$AMI_PARAMETER_NAME" \
+            --type String \
+            --value "$parameter_value" \
+            --overwrite \
+            --description "poorman-aws AMI metadata for ${{ inputs.application_name }} ${{ inputs.target_environment }}" \
+            >/dev/null
+
       - name: Upload canonical AMI artifact
         uses: actions/upload-artifact@v4
         with:
@@ -331,15 +367,3 @@ jobs:
             build-fingerprint.txt
             manifest.redacted.json
           if-no-files-found: error
-
-      - name: Publish AMI_ID to the target environment
-        env:
-          GH_TOKEN: ${{ secrets.environment_admin_token }}
-          AMI_ID: ${{ steps.metadata.outputs.ami_id }}
-          AMI_BUILD_FINGERPRINT: ${{ steps.metadata.outputs.build_fingerprint }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$AMI_ID" |
-            gh variable set AMI_ID --env "${{ inputs.target_environment }}" --repo "${GITHUB_REPOSITORY}"
-          printf '%s' "$AMI_BUILD_FINGERPRINT" |
-            gh variable set AMI_BUILD_FINGERPRINT --env "${{ inputs.target_environment }}" --repo "${GITHUB_REPOSITORY}"

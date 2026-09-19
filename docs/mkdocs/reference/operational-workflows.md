@@ -8,15 +8,16 @@ non-production lifecycle actions, and GitHub environment synchronization.
 Workflow: `.github/workflows/build-backend-ami.yml`
 
 The workflow builds an ARM64 application-host AMI with Packer, publishes a
-canonical AMI artifact, and updates the `AMI_ID` variable in the consumer's
-explicit target environment. It also uploads a redacted manifest. The build
-itself runs under the protected `ami-build` environment; publishing the AMI
-ID is a separate job bound to the selected target environment.
+canonical AMI artifact, and writes validated metadata to an application-scoped
+SSM Parameter Store record. It also uploads a redacted manifest. The build and
+SSM persistence run under the protected `ami-build` environment. The generated
+caller can optionally mirror the workflow outputs to the consumer environment.
 Before Packer runs, it computes a build fingerprint, checks the canonical
-artifact and target environment variables, and validates any candidate with
-AWS. A matching available AMI is reused, so repeated triggers with the same
-inputs do not create another builder or AMI. The workflow exposes the reused
-or newly built `ami_id` as an output for dependent reusable workflows.
+artifact, SSM Parameter Store, and target environment variables in that order,
+and validates any candidate with AWS. A matching available AMI is reused, so
+repeated triggers with the same inputs do not create another builder or AMI.
+The workflow exposes the reused or newly built `ami_id` as an output for
+dependent reusable workflows.
 Required inputs are:
 
 - `infrastructure_repository` and immutable `infrastructure_ref`;
@@ -31,10 +32,6 @@ Required inputs are:
 provides defaults for `subnet_id` and `ami_name_prefix` from the consumer
 onboarding configuration; the runner egress CIDR is determined at runtime.
 The `aws_role_arn` secret must be a temporary, narrowly scoped AMI-build role.
-The `environment_admin_token` secret must be a repository token allowed to
-write variables in the selected consumer environment. The default
-`GITHUB_TOKEN` is not sufficient for this repository API operation. Generated
-callers use `POORMAN_ENVIRONMENT_ADMIN_TOKEN` for this purpose.
 The workflow runs in the protected
 `ami-build` environment and does not build an application image.
 
@@ -89,7 +86,10 @@ sources are unavailable.
 The workflow accepts the same host and retention inputs as infrastructure
 deployment, including defaults of `t4g.micro`, 10 GiB root, 20 GiB data, EIP
 retention, data-volume retention, 30-day release retention, and enabled backup
-configuration. Production is rejected. `NUKE` is the most destructive action
+configuration. Production is rejected. The workflow resolves the AMI ID from
+the newest non-expired canonical artifact, SSM Parameter Store, or the selected
+environment's `AMI_ID` variable; it fails fast when all sources are unavailable.
+`NUKE` is the most destructive action
 and requires the exact action-specific confirmation.
 
 Use the wrapper's `lifecycle` command to preview and confirm the dispatch.
